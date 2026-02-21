@@ -1,0 +1,8 @@
+# SERP keywords config
+keywords:
+  - keyword: "best running shoes"
+    region: "US"
+    proxy_profile: "us-residential"
+  - keyword: "seo tools"
+    region: "US"
+    proxy_profile: "us-datacenter"

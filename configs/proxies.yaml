@@ -1,0 +1,11 @@
+profiles:
+  - name: "us-residential"
+    type: "http"
+    host: "proxy.example.com"
+    port: 8000
+    username: "user"
+    password: "pass"
+  - name: "us-datacenter"
+    type: "http"
+    host: "proxy2.example.com"
+    port: 8001

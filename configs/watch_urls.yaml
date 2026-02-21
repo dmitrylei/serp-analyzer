@@ -1,0 +1,8 @@
+# Watch list of URLs for SEO tag checks
+watch_urls:
+  - url: "https://example.com/"
+    region: "US"
+    proxy_profile: "us-residential"
+  - url: "https://example.com/blog"
+    region: "US"
+    proxy_profile: "us-datacenter"

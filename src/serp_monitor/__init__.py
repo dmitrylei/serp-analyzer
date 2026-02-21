@@ -1,0 +1,1 @@
+"""SERP Monitor package."""
