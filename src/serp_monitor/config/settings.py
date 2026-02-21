@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-    database_url: str = Field(alias="DATABASE_URL")
+    database_url: str | None = Field(default=None, alias="DATABASE_URL")
 
     http_timeout: int = Field(default=20, alias="HTTP_TIMEOUT")
     http_retries: int = Field(default=3, alias="HTTP_RETRIES")
