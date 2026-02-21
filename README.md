@@ -22,13 +22,13 @@ pip install -e .
 3) Запуск CLI:
 
 ```bash
-hourly-run --config configs/keywords.yaml --watch configs/watch_urls.yaml
+hourly-run --config configs/keywords.yaml
 export-csv --out out/results.csv
 ```
 
 ## Команды CLI
 
-- `hourly-run` — выполняет один почасовой прогон (SERP + watch URLs)
+- `hourly-run` — выполняет один почасовой прогон (SERP)
 - `export-csv` — экспортирует результаты в CSV
 
 ## Структура проекта (основа)
@@ -41,4 +41,3 @@ export-csv --out out/results.csv
 - `src/serp_monitor/cli` — CLI-точки входа
 - `src/serp_monitor/config` — конфиги приложения
 - `src/serp_monitor/utils` — утилиты
-
