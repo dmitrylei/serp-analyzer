@@ -1,4 +1,4 @@
-# SERP Monitor (MVP)
+# SERP Analyzer (MVP)
 
 Минимальный MVP-сервис для почасового мониторинга Google SERP и SEO-тегов.
 
