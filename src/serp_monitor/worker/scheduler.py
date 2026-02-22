@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import atexit
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -8,7 +9,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from sqlalchemy import select
 
 from serp_monitor.config.settings import get_settings
-from serp_monitor.db.models import Keyword, KeywordSchedule
+from serp_monitor.db.models import Keyword, KeywordSchedule, SchedulerStatus
 from serp_monitor.db.session import get_session
 from serp_monitor.providers.serper import SerperClient
 from serp_monitor.services.serp_service import SerpService
@@ -24,6 +25,15 @@ def _run_due_schedules() -> None:
     client = SerperClient(settings)
     service = SerpService(client)
     now = _now_tz()
+
+    with get_session() as session:
+        status = session.get(SchedulerStatus, "keyword-scheduler")
+        if not status:
+            status = SchedulerStatus(name="keyword-scheduler", running=True)
+        status.last_heartbeat = now
+        status.running = True
+        session.add(status)
+        session.commit()
 
     with get_session() as session:
         schedules = list(
@@ -55,13 +65,46 @@ def _run_due_schedules() -> None:
 def start_scheduler() -> BackgroundScheduler:
     settings = get_settings()
     scheduler = BackgroundScheduler(timezone=settings.scheduler_tz)
-    scheduler.add_job(_run_due_schedules, "interval", minutes=1, id="keyword_schedule_runner")
+    scheduler.add_job(
+        _run_due_schedules,
+        "interval",
+        minutes=1,
+        id="keyword_schedule_runner",
+        coalesce=True,
+        misfire_grace_time=90,
+        max_instances=1,
+    )
     scheduler.start()
     return scheduler
 
 
 def run_forever() -> None:
     settings = get_settings()
+    _register_shutdown()
     scheduler = BlockingScheduler(timezone=settings.scheduler_tz)
-    scheduler.add_job(_run_due_schedules, "interval", minutes=1, id="keyword_schedule_runner")
+    scheduler.add_job(
+        _run_due_schedules,
+        "interval",
+        minutes=1,
+        id="keyword_schedule_runner",
+        coalesce=True,
+        misfire_grace_time=90,
+        max_instances=1,
+    )
     scheduler.start()
+
+
+def _register_shutdown() -> None:
+    def _mark_stopped() -> None:
+        try:
+            with get_session() as session:
+                status = session.get(SchedulerStatus, "keyword-scheduler")
+                if not status:
+                    status = SchedulerStatus(name="keyword-scheduler", running=False)
+                status.running = False
+                session.add(status)
+                session.commit()
+        except Exception:
+            pass
+
+    atexit.register(_mark_stopped)
