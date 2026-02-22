@@ -11,11 +11,13 @@ from dotenv import load_dotenv
 from sqlalchemy import desc, select
 
 from serp_monitor.config.settings import get_settings
-from serp_monitor.db.models import Keyword, PageTag, Run, SerpResult, WatchUrl
+from serp_monitor.db.models import Keyword, KeywordSchedule, PageTag, Run, SerpResult, WatchUrl
 from serp_monitor.db.session import get_session
 from serp_monitor.providers.serper import SerperClient
 from serp_monitor.services.serp_service import SerpService
 from serp_monitor.services.tag_service import TagService
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 REGIONS = [
     "US",
@@ -93,6 +95,52 @@ def _load_latest_page_tag(session, run_id: int, url: str) -> PageTag | None:
         .limit(1)
     )
     return session.execute(stmt).scalar_one_or_none()
+
+
+def _extract_tag_block(raw: dict | None, key: str) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    block = raw.get(key)
+    if isinstance(block, dict):
+        return block
+    return None
+
+
+def _is_failure(block: dict | None) -> bool:
+    if not block:
+        return True
+    if block.get("error"):
+        return True
+    status = block.get("status")
+    return status not in (None, 200)
+
+
+def _is_mismatch(bot: dict | None, google: dict | None) -> bool:
+    if not bot or not google:
+        return False
+    if bot.get("canonical") != google.get("canonical"):
+        return True
+    return (bot.get("hreflang") or {}) != (google.get("hreflang") or {})
+
+
+def _render_tag_block(tag_data: dict | None, label: str) -> None:
+    if not tag_data:
+        st.write(f"{label}: —")
+        return
+    canonical = tag_data.get("canonical")
+    hreflang = tag_data.get("hreflang")
+    status = tag_data.get("status")
+    error = tag_data.get("error")
+    st.write(f"{label} canonical: {canonical or '—'}")
+    if status is not None:
+        st.caption(f"{label} status: {status}")
+    if error:
+        st.caption(f"{label} error: {error}")
+    if hreflang:
+        st.write(f"{label} hreflang:")
+        st.json(hreflang)
+    else:
+        st.write(f"{label} hreflang: —")
 
 
 def _load_history(session, limit: int = 20) -> list[Run]:
@@ -174,10 +222,30 @@ def main() -> None:
 
         with get_session() as session:
             rows = _load_run_results(session, run_id)[:10]
+            tag_rows = list(
+                session.execute(select(PageTag).where(PageTag.run_id == run_id)).scalars()
+            )
 
         if not rows:
             st.warning("No results for this run")
             return
+
+        total_checked = len(tag_rows)
+        failures = 0
+        mismatches = 0
+        for tag in tag_rows:
+            raw = tag.raw or {}
+            bot_block = _extract_tag_block(raw, "bot")
+            google_block = _extract_tag_block(raw, "googlebot")
+            if _is_failure(bot_block) or _is_failure(google_block):
+                failures += 1
+            if _is_mismatch(bot_block, google_block):
+                mismatches += 1
+
+        st.subheader("Tag Check Summary")
+        st.write(f"Checked: {total_checked} / {len(rows)}")
+        st.write(f"Failures: {failures}")
+        st.write(f"Mismatches: {mismatches}")
 
         st.subheader("Results")
         for row in rows:
@@ -198,26 +266,34 @@ def main() -> None:
                     with get_session() as session:
                         existing = _load_latest_page_tag(session, run_id, row.link)
                     if existing:
-                        st.write(f"Canonical: {existing.canonical or '—'}")
-                        if existing.hreflang:
-                            st.write("Hreflang:")
-                            st.json(existing.hreflang)
+                        raw = existing.raw or {}
+                        bot_block = _extract_tag_block(raw, "bot")
+                        google_block = _extract_tag_block(raw, "googlebot")
+                        if bot_block or google_block:
+                            _render_tag_block(bot_block, "Bot")
+                            _render_tag_block(google_block, "Googlebot")
                         else:
-                            st.write("Hreflang: —")
+                            _render_tag_block(
+                                {"canonical": existing.canonical, "hreflang": existing.hreflang},
+                                "Bot",
+                            )
 
                 if do_check:
                     try:
                         settings = get_settings()
                         service = TagService(settings)
                         with get_session() as session:
-                            tag = service.check_url(session, run_id, row.link, region=None)
+                            keyword = session.get(Keyword, row.keyword_id)
+                            tag = service.check_url(
+                                session,
+                                run_id,
+                                row.link,
+                                region=None,
+                                language=(keyword.language if keyword else None),
+                            )
                         st.success("Tags fetched")
-                        st.write(f"Canonical: {tag.get('canonical') or '—'}")
-                        if tag.get("hreflang"):
-                            st.write("Hreflang:")
-                            st.json(tag.get("hreflang"))
-                        else:
-                            st.write("Hreflang: —")
+                        _render_tag_block(tag.get("bot"), "Bot")
+                        _render_tag_block(tag.get("googlebot"), "Googlebot")
                     except Exception as exc:  # noqa: BLE001
                         st.error(f"Tag check failed: {exc}")
 
@@ -288,6 +364,81 @@ def main() -> None:
                     st.success("Keyword deleted")
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"Failed to delete keyword: {exc}")
+
+        st.divider()
+        st.subheader("Keyword Schedules")
+        try:
+            with get_session() as session:
+                schedules = list(
+                    session.execute(
+                        select(KeywordSchedule).order_by(KeywordSchedule.id.desc()).limit(200)
+                    ).scalars()
+                )
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Failed to load schedules: {exc}")
+            return
+
+        if schedules:
+            schedule_table = []
+            keyword_map = {}
+            with get_session() as session:
+                for row in schedules:
+                    keyword = session.get(Keyword, row.keyword_id)
+                    keyword_map[row.id] = keyword
+                    schedule_table.append(
+                        {
+                            "ID": row.id,
+                            "Keyword": keyword.keyword if keyword else "—",
+                            "Region": keyword.region if keyword else "—",
+                            "Language": keyword.language if keyword else "—",
+                            "Interval (h)": row.interval_hours,
+                            "Active": row.active,
+                            "Last Run": row.last_run_at,
+                            "Next Run": row.next_run_at,
+                        }
+                    )
+            st.dataframe(pd.DataFrame(schedule_table), width="stretch")
+        else:
+            st.info("No schedules yet.")
+
+        st.write("Create or update schedule")
+        if keywords:
+            kw_options = {f"{row.id} • {row.keyword} • {row.region}/{row.language}": row.id for row in keywords}
+            selected_kw = st.selectbox("Keyword", list(kw_options.keys()))
+            interval = st.number_input("Interval (hours)", min_value=1, max_value=720, value=24, step=1)
+            active = st.checkbox("Active", value=True)
+            if st.button("Save schedule"):
+                try:
+                    with get_session() as session:
+                        existing = session.execute(
+                            select(KeywordSchedule).where(
+                                KeywordSchedule.keyword_id == kw_options[selected_kw]
+                            )
+                        ).scalar_one_or_none()
+                        settings = get_settings()
+                        now = datetime.now(ZoneInfo(settings.scheduler_tz))
+                        if existing:
+                            existing.interval_hours = int(interval)
+                            existing.active = bool(active)
+                            if existing.active:
+                                existing.next_run_at = now + timedelta(hours=int(interval))
+                            session.add(existing)
+                        else:
+                            schedule = KeywordSchedule(
+                                keyword_id=kw_options[selected_kw],
+                                interval_hours=int(interval),
+                                active=bool(active),
+                                next_run_at=now + timedelta(hours=int(interval)),
+                            )
+                            session.add(schedule)
+                        session.commit()
+                    st.success("Schedule saved")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Failed to save schedule: {exc}")
+        else:
+            st.info("Create at least one keyword first.")
+
+
 
 if __name__ == "__main__":
     main()

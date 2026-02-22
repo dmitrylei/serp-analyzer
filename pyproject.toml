@@ -29,6 +29,7 @@ dependencies = [
 hourly-run = "serp_monitor.cli.hourly_run:main"
 export-csv = "serp_monitor.cli.export_csv:main"
 serp-ui = "serp_monitor.cli.serp_ui:main"
+serp-scheduler = "serp_monitor.cli.scheduler_run:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

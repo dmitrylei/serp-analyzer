@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     serper_base_url: str = Field(default="https://google.serper.dev", alias="SERPER_BASE_URL")
 
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    scheduler_tz: str = Field(default="Etc/GMT-1", alias="SCHEDULER_TZ")
 
 
 _settings: Settings | None = None

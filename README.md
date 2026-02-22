@@ -32,6 +32,12 @@ export-csv --out out/results.csv
 serp-ui
 ```
 
+## Планировщик (отдельный процесс)
+
+```bash
+serp-scheduler
+```
+
 ## Команды CLI
 
 - `hourly-run` — выполняет один почасовой прогон (SERP)
