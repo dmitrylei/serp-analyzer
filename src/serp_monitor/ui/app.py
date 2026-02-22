@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import os
 from pathlib import Path
 
@@ -10,8 +12,13 @@ import streamlit as st
 from dotenv import load_dotenv
 from sqlalchemy import desc, select
 
+# Ensure src/ is on sys.path for Streamlit Cloud
+_src_path = Path(__file__).resolve().parents[2]
+if str(_src_path) not in sys.path:
+    sys.path.insert(0, str(_src_path))
+
 from serp_monitor.config.settings import get_settings
-from serp_monitor.db.models import Keyword, KeywordSchedule, PageTag, Run, SerpResult, WatchUrl
+from serp_monitor.db.models import Keyword, KeywordSchedule, PageTag, Run, SchedulerStatus, SerpResult, WatchUrl
 from serp_monitor.db.session import get_session
 from serp_monitor.providers.serper import SerperClient
 from serp_monitor.services.serp_service import SerpService
@@ -123,6 +130,34 @@ def _is_mismatch(bot: dict | None, google: dict | None) -> bool:
     return (bot.get("hreflang") or {}) != (google.get("hreflang") or {})
 
 
+def _scheduler_status_block() -> None:
+    st.subheader("Scheduler Status")
+    try:
+        with get_session() as session:
+            status = session.get(SchedulerStatus, "keyword-scheduler")
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Failed to load scheduler status: {exc}")
+        return
+
+    if not status:
+        st.info("No scheduler heartbeat yet.")
+        return
+
+    settings = get_settings()
+    now = datetime.now(ZoneInfo(settings.scheduler_tz))
+    last = status.last_heartbeat
+    stale = False
+    if last:
+        delta = (now - last).total_seconds()
+        stale = delta > 180
+
+    st.write(f"Running: {status.running}")
+    st.write(f"Last heartbeat: {status.last_heartbeat}")
+    st.write(f"Updated at: {status.updated_at}")
+    if stale:
+        st.warning("Scheduler heartbeat is stale. It may be stopped.")
+
+
 def _render_tag_block(tag_data: dict | None, label: str) -> None:
     if not tag_data:
         st.write(f"{label}: —")
@@ -164,7 +199,7 @@ def main() -> None:
     if not os.getenv("DATABASE_URL"):
         st.warning("DATABASE_URL is not set. Add it to .env to enable history.")
 
-    tabs = st.tabs(["New Query", "History", "Keywords"])
+    tabs = st.tabs(["New Query", "History", "Keywords", "Settings"])
 
     with tabs[0]:
         with st.form("serp_form"):
@@ -437,6 +472,9 @@ def main() -> None:
                     st.error(f"Failed to save schedule: {exc}")
         else:
             st.info("Create at least one keyword first.")
+
+    with tabs[3]:
+        _scheduler_status_block()
 
 
 
