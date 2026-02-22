@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from serp_monitor.db.models import Keyword, Run, RunStatus, SerpResult
+from serp_monitor.db.models import Keyword, Run, RunStatus, SerpResult, TrackedHit, TrackedSite
+from serp_monitor.utils.urls import extract_domain
 from serp_monitor.parsers.serper import parse_organic_results
 from serp_monitor.providers.serper import SerperClient
 
@@ -18,6 +19,8 @@ class SerpService:
         session.add(run)
         session.flush()
         try:
+            tracked_sites = list(session.query(TrackedSite).all())
+            tracked_domains = {site.domain: site.id for site in tracked_sites}
             for keyword in keywords:
                 payload = self._client.search(
                     keyword.keyword,
@@ -28,6 +31,8 @@ class SerpService:
                 for row in rows:
                     if row.get("position") is None or not row.get("link"):
                         continue
+                    domain = extract_domain(row["link"])
+                    tracked_site_id = tracked_domains.get(domain)
                     session.add(
                         SerpResult(
                             run_id=run.id,
@@ -39,6 +44,14 @@ class SerpService:
                             raw=row.get("raw") or {},
                         )
                     )
+                    if tracked_site_id:
+                        session.add(
+                            TrackedHit(
+                                tracked_site_id=tracked_site_id,
+                                run_id=run.id,
+                                keyword_id=keyword.id,
+                            )
+                        )
             run.status = RunStatus.success
             run.finished_at = datetime.now(timezone.utc)
             session.commit()

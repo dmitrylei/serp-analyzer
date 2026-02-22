@@ -18,13 +18,24 @@ if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
 
 from serp_monitor.config.settings import get_settings
-from serp_monitor.db.models import Keyword, KeywordSchedule, PageTag, Run, SchedulerStatus, SerpResult, WatchUrl
+from serp_monitor.db.models import (
+    Keyword,
+    KeywordSchedule,
+    PageTag,
+    Run,
+    SchedulerStatus,
+    SerpResult,
+    TrackedHit,
+    TrackedSite,
+    WatchUrl,
+)
 from serp_monitor.db.session import get_session
 from serp_monitor.providers.serper import SerperClient
 from serp_monitor.services.serp_service import SerpService
 from serp_monitor.services.tag_service import TagService
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from serp_monitor.utils.urls import extract_domain
 
 REGIONS = [
     "US",
@@ -199,7 +210,7 @@ def main() -> None:
     if not os.getenv("DATABASE_URL"):
         st.warning("DATABASE_URL is not set. Add it to .env to enable history.")
 
-    tabs = st.tabs(["New Query", "History", "Keywords", "Settings"])
+    tabs = st.tabs(["New Query", "History", "Keywords", "Sites", "Settings"])
 
     with tabs[0]:
         with st.form("serp_form"):
@@ -256,7 +267,7 @@ def main() -> None:
         run_id = options[selected]
 
         with get_session() as session:
-            rows = _load_run_results(session, run_id)[:10]
+            rows = _load_run_results(session, run_id)
             tag_rows = list(
                 session.execute(select(PageTag).where(PageTag.run_id == run_id)).scalars()
             )
@@ -282,55 +293,111 @@ def main() -> None:
         st.write(f"Failures: {failures}")
         st.write(f"Mismatches: {mismatches}")
 
-        st.subheader("Results")
+        keyword_map = {}
         for row in rows:
-            with st.container():
-                st.markdown(f"**{row.position}. {row.title or ''}**")
-                st.write(row.link)
-                if row.snippet:
-                    st.caption(row.snippet)
+            keyword_map.setdefault(row.keyword_id, row)
 
-                col1, col2 = st.columns([1, 5])
-                with col1:
-                    do_check = st.button(
-                        "Check Tags",
-                        key=f"check_tags_{row.id}",
-                    )
+        keyword_options = {}
+        with get_session() as session:
+            for row in rows:
+                keyword = session.get(Keyword, row.keyword_id)
+                if keyword:
+                    keyword_options[f"{keyword.keyword} • {keyword.region}/{keyword.language}"] = keyword.id
+        selected_keyword = st.selectbox("Keyword", list(keyword_options.keys()))
+        selected_keyword_id = keyword_options[selected_keyword]
 
-                with col2:
+        filtered_rows = [r for r in rows if r.keyword_id == selected_keyword_id]
+        if not filtered_rows:
+            st.info("No results for selected keyword.")
+            return
+
+        with get_session() as session:
+            keyword = session.get(Keyword, selected_keyword_id)
+        st.markdown(
+            f"**Run ID:** {run_id}  \n"
+            f"**Keyword:** {keyword.keyword if keyword else '—'}  \n"
+            f"**Region:** {keyword.region if keyword else '—'}  \n"
+            f"**Date:** {history[0].created_at.date() if history else '—'}  \n"
+            f"**Time:** {history[0].created_at.time() if history else '—'}"
+        )
+
+        tag_map = {}
+        with get_session() as session:
+            for row in filtered_rows:
+                existing = _load_latest_page_tag(session, run_id, row.link)
+                if existing:
+                    raw = existing.raw or {}
+                    tag_map[row.link] = {
+                        "bot": _extract_tag_block(raw, "bot")
+                        or {"canonical": existing.canonical, "hreflang": existing.hreflang},
+                        "googlebot": _extract_tag_block(raw, "googlebot"),
+                    }
+
+        st.subheader("Results Table")
+        header_cols = st.columns([1, 3, 3, 3, 2, 2, 2, 2, 1, 1])
+        headers = [
+            "Position",
+            "URL",
+            "Meta Title",
+            "Meta Description",
+            "Bot Canonical",
+            "Bot Hreflang",
+            "Google Bot Canonical",
+            "Google Bot Hreflang",
+            "Check",
+            "★",
+        ]
+        for col, title in zip(header_cols, headers, strict=False):
+            col.markdown(f"**{title}**")
+
+        for row in filtered_rows:
+            tags = tag_map.get(row.link, {})
+            bot = tags.get("bot") or {}
+            google = tags.get("googlebot") or {}
+
+            cols = st.columns([1, 3, 3, 3, 2, 2, 2, 2, 1, 1])
+            cols[0].write(row.position)
+            cols[1].write(row.link)
+            cols[2].write(row.title or "—")
+            cols[3].write(row.snippet or "—")
+            cols[4].write(bot.get("canonical") or "—")
+            cols[5].write(bot.get("hreflang") or "—")
+            cols[6].write(google.get("canonical") or "—")
+            cols[7].write(google.get("hreflang") or "—")
+
+            if cols[8].button("Check Tags", key=f"check_{row.id}"):
+                try:
+                    settings = get_settings()
+                    service = TagService(settings)
                     with get_session() as session:
-                        existing = _load_latest_page_tag(session, run_id, row.link)
-                    if existing:
-                        raw = existing.raw or {}
-                        bot_block = _extract_tag_block(raw, "bot")
-                        google_block = _extract_tag_block(raw, "googlebot")
-                        if bot_block or google_block:
-                            _render_tag_block(bot_block, "Bot")
-                            _render_tag_block(google_block, "Googlebot")
-                        else:
-                            _render_tag_block(
-                                {"canonical": existing.canonical, "hreflang": existing.hreflang},
-                                "Bot",
-                            )
+                        tag = service.check_url(
+                            session,
+                            run_id,
+                            row.link,
+                            region=None,
+                            language=(keyword.language if keyword else None),
+                        )
+                    st.success("Tags fetched")
+                    _render_tag_block(tag.get("bot"), "Bot")
+                    _render_tag_block(tag.get("googlebot"), "Googlebot")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Tag check failed: {exc}")
 
-                if do_check:
-                    try:
-                        settings = get_settings()
-                        service = TagService(settings)
-                        with get_session() as session:
-                            keyword = session.get(Keyword, row.keyword_id)
-                            tag = service.check_url(
-                                session,
-                                run_id,
-                                row.link,
-                                region=None,
-                                language=(keyword.language if keyword else None),
-                            )
-                        st.success("Tags fetched")
-                        _render_tag_block(tag.get("bot"), "Bot")
-                        _render_tag_block(tag.get("googlebot"), "Googlebot")
-                    except Exception as exc:  # noqa: BLE001
-                        st.error(f"Tag check failed: {exc}")
+            if cols[9].button("★", key=f"star_{row.id}"):
+                try:
+                    domain = extract_domain(row.link)
+                    with get_session() as session:
+                        existing = (
+                            session.query(TrackedSite)
+                            .filter(TrackedSite.domain == domain)
+                            .one_or_none()
+                        )
+                        if not existing:
+                            session.add(TrackedSite(domain=domain))
+                            session.commit()
+                    st.success(f"Tracking {domain}")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Failed to track site: {exc}")
 
     with tabs[2]:
         st.subheader("Keyword Manager")
@@ -474,6 +541,64 @@ def main() -> None:
             st.info("Create at least one keyword first.")
 
     with tabs[3]:
+        st.subheader("Tracked Sites")
+        try:
+            with get_session() as session:
+                sites = list(session.query(TrackedSite).order_by(TrackedSite.id.desc()).all())
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Failed to load tracked sites: {exc}")
+            return
+
+        if not sites:
+            st.info("No tracked sites yet. Use ★ in History to add.")
+        else:
+            site_options = {f"{s.id} • {s.domain}": s.id for s in sites}
+            selected_site = st.selectbox("Select site", list(site_options.keys()))
+            site_id = site_options[selected_site]
+
+            with get_session() as session:
+                hits = list(
+                    session.query(TrackedHit)
+                    .filter(TrackedHit.tracked_site_id == site_id)
+                    .order_by(TrackedHit.detected_at.desc())
+                    .limit(200)
+                )
+                if hits:
+                    rows = []
+                    for hit in hits:
+                        keyword = session.get(Keyword, hit.keyword_id)
+                        rows.append(
+                            {
+                                "Detected At": hit.detected_at,
+                                "Keyword": keyword.keyword if keyword else "—",
+                                "Region": keyword.region if keyword else "—",
+                                "Language": keyword.language if keyword else "—",
+                                "Run ID": hit.run_id,
+                            }
+                        )
+                    st.dataframe(pd.DataFrame(rows), width="stretch")
+                else:
+                    st.info("No detections yet.")
+
+        st.divider()
+        st.write("Remove tracked site")
+        if sites:
+            remove_site = st.selectbox("Site to remove", list(site_options.keys()), key="remove_site")
+            if st.button("Remove"):
+                try:
+                    with get_session() as session:
+                        site = session.get(TrackedSite, site_options[remove_site])
+                        if site:
+                            session.query(TrackedHit).filter(
+                                TrackedHit.tracked_site_id == site.id
+                            ).delete()
+                            session.delete(site)
+                            session.commit()
+                    st.success("Removed")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Failed to remove site: {exc}")
+
+    with tabs[4]:
         _scheduler_status_block()
 
 
