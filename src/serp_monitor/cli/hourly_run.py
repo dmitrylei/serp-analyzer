@@ -10,7 +10,7 @@ from sqlalchemy import select
 from serp_monitor.config.loaders import load_config
 from serp_monitor.config.settings import get_settings
 from serp_monitor.db.models import Keyword
-from serp_monitor.db.session import SessionLocal
+from serp_monitor.db.session import get_session
 from serp_monitor.providers.serper import SerperClient
 from serp_monitor.services.serp_service import SerpService
 
@@ -28,10 +28,12 @@ def _load_keywords(config_path: str) -> list[dict[str, Any]]:
         region = str(item.get("region") or "").strip()
         if not keyword or not region:
             continue
+        language = str(item.get("language") or "EN").strip()
         normalized.append(
             {
                 "keyword": keyword,
                 "region": region,
+                "language": language,
                 "proxy_profile": (item.get("proxy_profile") or None),
             }
         )
@@ -44,6 +46,7 @@ def _sync_keywords(session, keywords: list[dict[str, Any]]) -> list[Keyword]:
         stmt = select(Keyword).where(
             Keyword.keyword == item["keyword"],
             Keyword.region == item["region"],
+            Keyword.language == item["language"],
             Keyword.proxy_profile == item["proxy_profile"],
         )
         existing = session.execute(stmt).scalar_one_or_none()
@@ -77,7 +80,7 @@ def main() -> None:
         print("No keywords found in config")
         return
 
-    with SessionLocal() as session:
+    with get_session() as session:
         keywords = _sync_keywords(session, keywords_config)
         run = service.run_keywords(session, keywords, kind="hourly")
 

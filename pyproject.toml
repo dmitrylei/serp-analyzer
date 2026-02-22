@@ -20,12 +20,15 @@ dependencies = [
   "pyyaml>=6.0",
   "tenacity>=8.3",
   "python-dotenv>=1.0",
-  "rich>=13.7"
+  "rich>=13.7",
+  "streamlit>=1.32",
+  "pandas>=2.2"
 ]
 
 [project.scripts]
 hourly-run = "serp_monitor.cli.hourly_run:main"
 export-csv = "serp_monitor.cli.export_csv:main"
+serp-ui = "serp_monitor.cli.serp_ui:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

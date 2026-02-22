@@ -19,7 +19,11 @@ class SerpService:
         session.flush()
         try:
             for keyword in keywords:
-                payload = self._client.search(keyword.keyword, region=keyword.region)
+                payload = self._client.search(
+                    keyword.keyword,
+                    region=keyword.region,
+                    language=keyword.language or None,
+                )
                 rows = parse_organic_results(payload)
                 for row in rows:
                     if row.get("position") is None or not row.get("link"):

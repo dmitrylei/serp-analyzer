@@ -26,10 +26,26 @@ hourly-run --config configs/keywords.yaml
 export-csv --out out/results.csv
 ```
 
+## Простой UI (Streamlit)
+
+```bash
+serp-ui
+```
+
 ## Команды CLI
 
 - `hourly-run` — выполняет один почасовой прогон (SERP)
 - `export-csv` — экспортирует результаты в CSV
+
+## Keyword config schema
+
+```yaml
+keywords:
+  - keyword: "aviator"
+    region: "IN"
+    language: "EN"
+    proxy_profile: "optional"
+```
 
 ## Структура проекта (основа)
 
@@ -41,3 +57,4 @@ export-csv --out out/results.csv
 - `src/serp_monitor/cli` — CLI-точки входа
 - `src/serp_monitor/config` — конфиги приложения
 - `src/serp_monitor/utils` — утилиты
+- `src/serp_monitor/ui` — простой UI

@@ -8,7 +8,7 @@ import csv
 from sqlalchemy import desc, select
 
 from serp_monitor.db.models import Keyword, Run, SerpResult
-from serp_monitor.db.session import SessionLocal
+from serp_monitor.db.session import get_session
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,7 +27,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
-    with SessionLocal() as session:
+    with get_session() as session:
         run_id = args.run_id or _get_latest_run_id(session)
         if not run_id:
             print("No runs found")
@@ -43,6 +43,7 @@ def main() -> None:
                 SerpResult.created_at,
                 Keyword.keyword,
                 Keyword.region,
+                Keyword.language,
             )
             .join(Keyword, Keyword.id == SerpResult.keyword_id)
             .where(SerpResult.run_id == run_id)
@@ -61,6 +62,7 @@ def main() -> None:
             "created_at",
             "keyword",
             "region",
+            "language",
         ])
         for row in rows:
             writer.writerow(row)

@@ -12,4 +12,5 @@ class Keyword(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     keyword: Mapped[str] = mapped_column(String(300), index=True)
     region: Mapped[str] = mapped_column(String(8), index=True)
+    language: Mapped[str | None] = mapped_column(String(8), index=True)
     proxy_profile: Mapped[str | None] = mapped_column(String(64), index=True)
