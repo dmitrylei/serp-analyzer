@@ -11,10 +11,11 @@ from dotenv import load_dotenv
 from sqlalchemy import desc, select
 
 from serp_monitor.config.settings import get_settings
-from serp_monitor.db.models import Keyword, Run, SerpResult
+from serp_monitor.db.models import Keyword, PageTag, Run, SerpResult, WatchUrl
 from serp_monitor.db.session import get_session
 from serp_monitor.providers.serper import SerperClient
 from serp_monitor.services.serp_service import SerpService
+from serp_monitor.services.tag_service import TagService
 
 REGIONS = [
     "US",
@@ -77,6 +78,21 @@ def _load_run_results(session, run_id: int) -> list[SerpResult]:
         .order_by(SerpResult.position.asc())
     )
     return list(session.execute(stmt).scalars())
+
+
+def _load_latest_page_tag(session, run_id: int, url: str) -> PageTag | None:
+    watch = session.execute(
+        select(WatchUrl).where(WatchUrl.url == url)
+    ).scalar_one_or_none()
+    if not watch:
+        return None
+    stmt = (
+        select(PageTag)
+        .where(PageTag.run_id == run_id, PageTag.watch_url_id == watch.id)
+        .order_by(PageTag.id.desc())
+        .limit(1)
+    )
+    return session.execute(stmt).scalar_one_or_none()
 
 
 def _load_history(session, limit: int = 20) -> list[Run]:
@@ -163,16 +179,47 @@ def main() -> None:
             st.warning("No results for this run")
             return
 
-        table = [
-            {
-                "Position": row.position,
-                "Title": row.title,
-                "Link": row.link,
-                "Snippet": row.snippet,
-            }
-            for row in rows
-        ]
-        st.dataframe(pd.DataFrame(table), width="stretch")
+        st.subheader("Results")
+        for row in rows:
+            with st.container():
+                st.markdown(f"**{row.position}. {row.title or ''}**")
+                st.write(row.link)
+                if row.snippet:
+                    st.caption(row.snippet)
+
+                col1, col2 = st.columns([1, 5])
+                with col1:
+                    do_check = st.button(
+                        "Check Tags",
+                        key=f"check_tags_{row.id}",
+                    )
+
+                with col2:
+                    with get_session() as session:
+                        existing = _load_latest_page_tag(session, run_id, row.link)
+                    if existing:
+                        st.write(f"Canonical: {existing.canonical or '—'}")
+                        if existing.hreflang:
+                            st.write("Hreflang:")
+                            st.json(existing.hreflang)
+                        else:
+                            st.write("Hreflang: —")
+
+                if do_check:
+                    try:
+                        settings = get_settings()
+                        service = TagService(settings)
+                        with get_session() as session:
+                            tag = service.check_url(session, run_id, row.link, region=None)
+                        st.success("Tags fetched")
+                        st.write(f"Canonical: {tag.get('canonical') or '—'}")
+                        if tag.get("hreflang"):
+                            st.write("Hreflang:")
+                            st.json(tag.get("hreflang"))
+                        else:
+                            st.write("Hreflang: —")
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"Tag check failed: {exc}")
 
     with tabs[2]:
         st.subheader("Keyword Manager")
