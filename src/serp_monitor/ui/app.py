@@ -48,6 +48,28 @@ REGIONS = [
     "ES",
     "IT",
     "NL",
+    "AT",
+    "BE",
+    "BG",
+    "CH",
+    "CZ",
+    "DK",
+    "EE",
+    "FI",
+    "GR",
+    "HR",
+    "HU",
+    "IE",
+    "LT",
+    "LU",
+    "LV",
+    "NO",
+    "PL",
+    "PT",
+    "RO",
+    "SE",
+    "SI",
+    "SK",
     "BR",
     "MX",
     "SG",
@@ -64,6 +86,20 @@ LANGUAGES = [
     "PT",
     "NL",
     "JA",
+    "CS",
+    "PL",
+    "SK",
+    "SL",
+    "HU",
+    "RO",
+    "BG",
+    "EL",
+    "DA",
+    "SV",
+    "FI",
+    "ET",
+    "LV",
+    "LT",
 ]
 
 def _find_project_root() -> Path | None:
@@ -355,10 +391,14 @@ def main() -> None:
         st.dataframe(pd.DataFrame(run_table), width="stretch")
         st.caption(f"Showing {offset + 1}–{min(offset + page_size, total_runs)} of {total_runs}")
 
-        options = {
-            f"Run {run.id} • {run.kind} • {run.created_at} • {run.status}": run.id
-            for run in history
-        }
+        options = {}
+        for run in history:
+            meta = run_meta.get(run.id, {})
+            keywords = ", ".join(sorted(meta.get("keywords", []))) or "—"
+            regions = ", ".join(sorted(meta.get("regions", []))) or "—"
+            options[
+                f"Run {run.id} • {run.kind} • {keywords} • {regions} • {run.created_at} • {run.status}"
+            ] = run.id
         selected = st.selectbox("Select run", list(options.keys()))
         run_id = options[selected]
         run_obj = next((r for r in history if r.id == run_id), None)
@@ -675,6 +715,7 @@ def main() -> None:
             site_options = {f"{s.id} • {s.domain}": s.id for s in sites}
             selected_site = st.selectbox("Select site", list(site_options.keys()))
             site_id = site_options[selected_site]
+            site_domain = selected_site.split(" • ", 1)[1]
 
             with get_session() as session:
                 hits = list(
@@ -685,8 +726,38 @@ def main() -> None:
                 )
                 if hits:
                     rows = []
+                    last_google_canonical: str | None = None
+                    last_google_hreflang: str | dict | None = None
                     for hit in hits:
                         keyword = session.get(Keyword, hit.keyword_id)
+                        google_canonical = "—"
+                        google_hreflang = "—"
+                        if hit.url:
+                            watch = (
+                                session.query(WatchUrl)
+                                .filter(WatchUrl.url == hit.url)
+                                .one_or_none()
+                            )
+                            if watch:
+                                page_tag = (
+                                    session.query(PageTag)
+                                    .filter(
+                                        PageTag.run_id == hit.run_id,
+                                        PageTag.watch_url_id == watch.id,
+                                    )
+                                    .order_by(PageTag.id.desc())
+                                    .first()
+                                )
+                                if page_tag and isinstance(page_tag.raw, dict):
+                                    google_block = _extract_tag_block(page_tag.raw, "googlebot") or {}
+                                    google_canonical = google_block.get("canonical") or "—"
+                                    google_hreflang = google_block.get("hreflang") or "—"
+                        changed = False
+                        if last_google_canonical is not None or last_google_hreflang is not None:
+                            if google_canonical != (last_google_canonical or "—"):
+                                changed = True
+                            if google_hreflang != (last_google_hreflang or "—"):
+                                changed = True
                         rows.append(
                             {
                                 "Detected At": hit.detected_at,
@@ -695,12 +766,108 @@ def main() -> None:
                                 "Language": keyword.language if keyword else "—",
                                 "Position": hit.position,
                                 "URL": hit.url,
+                                "GoogleBot Canonical": google_canonical,
+                                "GoogleBot Hreflang": google_hreflang,
                                 "Run ID": hit.run_id,
+                                "_changed": changed,
                             }
                         )
-                    st.dataframe(pd.DataFrame(rows), width="stretch")
+                        last_google_canonical = google_canonical
+                        last_google_hreflang = google_hreflang
+                    df = pd.DataFrame(rows)
+                    def _highlight(row):
+                        if row.get("_changed"):
+                            return ["background-color:#ffebee"] * len(row)
+                        return [""] * len(row)
+                    if "_changed" in df.columns:
+                        df_display = df.drop(columns=["_changed"])
+                        st.dataframe(df_display.style.apply(_highlight, axis=1), width="stretch")
+                    else:
+                        st.dataframe(df, width="stretch")
                 else:
                     st.info("No detections yet.")
+
+            st.divider()
+            st.subheader("Ranking History (Top-10 or Not in Top-10)")
+            with get_session() as session:
+                keyword_ids = (
+                    session.query(TrackedHit.keyword_id)
+                    .filter(TrackedHit.tracked_site_id == site_id)
+                    .distinct()
+                    .all()
+                )
+                keyword_ids = [kid for (kid,) in keyword_ids]
+                keywords = (
+                    session.query(Keyword)
+                    .filter(Keyword.id.in_(keyword_ids))
+                    .order_by(Keyword.keyword)
+                    .all()
+                )
+
+            if not keywords:
+                st.info("No keywords tracked for this site yet.")
+            else:
+                keyword_options = {
+                    f"{k.keyword} • {k.region}/{k.language}": k.id for k in keywords
+                }
+                selected_kw = st.selectbox("Keyword for ranking history", list(keyword_options.keys()))
+                selected_kw_id = keyword_options[selected_kw]
+
+                with get_session() as session:
+                    runs = (
+                        session.query(Run)
+                        .join(SerpResult, SerpResult.run_id == Run.id)
+                        .filter(SerpResult.keyword_id == selected_kw_id)
+                        .order_by(Run.created_at.asc())
+                        .distinct()
+                        .all()
+                    )
+                    first_hit = (
+                        session.query(TrackedHit)
+                        .filter(
+                            TrackedHit.tracked_site_id == site_id,
+                            TrackedHit.keyword_id == selected_kw_id,
+                        )
+                        .order_by(TrackedHit.detected_at.asc())
+                        .first()
+                    )
+
+                    if not runs or not first_hit:
+                        st.info("No runs yet for this keyword/site.")
+                    else:
+                        # Only show runs after the first time the site was found
+                        runs = [r for r in runs if r.created_at >= first_hit.detected_at]
+                        run_ids = [r.id for r in runs]
+
+                        serp_rows = (
+                            session.query(SerpResult)
+                            .filter(
+                                SerpResult.run_id.in_(run_ids),
+                                SerpResult.keyword_id == selected_kw_id,
+                            )
+                            .all()
+                        )
+
+                        best_pos_by_run = {}
+                        for row in serp_rows:
+                            if extract_domain(row.link) != site_domain:
+                                continue
+                            pos = int(row.position)
+                            prev = best_pos_by_run.get(row.run_id)
+                            if prev is None or pos < prev:
+                                best_pos_by_run[row.run_id] = pos
+
+                        table = []
+                        for r in runs:
+                            pos = best_pos_by_run.get(r.id)
+                            table.append(
+                                {
+                                    "Run ID": r.id,
+                                    "Date": r.created_at,
+                                    "Position": pos if pos is not None else "not in top 10",
+                                }
+                            )
+                        st.dataframe(pd.DataFrame(table), width="stretch")
 
         st.divider()
         st.write("Remove tracked site")
