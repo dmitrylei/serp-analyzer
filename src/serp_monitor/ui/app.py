@@ -189,13 +189,8 @@ def _render_tag_block(tag_data: dict | None, label: str) -> None:
         st.write(f"{label} hreflang: —")
 
 
-def _load_history(session, limit: int = 20) -> list[Run]:
-    stmt = (
-        select(Run)
-        .where(Run.kind == "ui")
-        .order_by(desc(Run.id))
-        .limit(limit)
-    )
+def _load_history(session, limit: int = 50) -> list[Run]:
+    stmt = select(Run).order_by(desc(Run.id)).limit(limit)
     return list(session.execute(stmt).scalars())
 
 
@@ -262,9 +257,27 @@ def main() -> None:
             st.info("History is empty yet.")
             return
 
-        options = {f"Run {run.id} • {run.created_at} • {run.status}": run.id for run in history}
+        run_table = [
+            {
+                "Run ID": run.id,
+                "Kind": run.kind,
+                "Status": run.status,
+                "Created At": run.created_at,
+                "Started At": run.started_at,
+                "Finished At": run.finished_at,
+            }
+            for run in history
+        ]
+        st.subheader("Runs")
+        st.dataframe(pd.DataFrame(run_table), width="stretch")
+
+        options = {
+            f"Run {run.id} • {run.kind} • {run.created_at} • {run.status}": run.id
+            for run in history
+        }
         selected = st.selectbox("Select run", list(options.keys()))
         run_id = options[selected]
+        run_obj = next((r for r in history if r.id == run_id), None)
 
         with get_session() as session:
             rows = _load_run_results(session, run_id)
@@ -302,7 +315,8 @@ def main() -> None:
             for row in rows:
                 keyword = session.get(Keyword, row.keyword_id)
                 if keyword:
-                    keyword_options[f"{keyword.keyword} • {keyword.region}/{keyword.language}"] = keyword.id
+                    label = f"{keyword.keyword} • {keyword.region}/{keyword.language}"
+                    keyword_options[label] = keyword.id
         selected_keyword = st.selectbox("Keyword", list(keyword_options.keys()))
         selected_keyword_id = keyword_options[selected_keyword]
 
@@ -317,8 +331,8 @@ def main() -> None:
             f"**Run ID:** {run_id}  \n"
             f"**Keyword:** {keyword.keyword if keyword else '—'}  \n"
             f"**Region:** {keyword.region if keyword else '—'}  \n"
-            f"**Date:** {history[0].created_at.date() if history else '—'}  \n"
-            f"**Time:** {history[0].created_at.time() if history else '—'}"
+            f"**Date:** {run_obj.created_at.date() if run_obj else '—'}  \n"
+            f"**Time:** {run_obj.created_at.time() if run_obj else '—'}"
         )
 
         tag_map = {}
