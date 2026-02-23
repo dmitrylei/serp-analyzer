@@ -10,7 +10,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, func
 
 # Ensure src/ is on sys.path for Streamlit Cloud
 _src_path = Path(__file__).resolve().parents[2]
@@ -189,8 +189,8 @@ def _render_tag_block(tag_data: dict | None, label: str) -> None:
         st.write(f"{label} hreflang: —")
 
 
-def _load_history(session, limit: int = 50) -> list[Run]:
-    stmt = select(Run).order_by(desc(Run.id)).limit(limit)
+def _load_history(session, limit: int = 50, offset: int = 0) -> list[Run]:
+    stmt = select(Run).order_by(desc(Run.id)).limit(limit).offset(offset)
     return list(session.execute(stmt).scalars())
 
 
@@ -248,28 +248,110 @@ def main() -> None:
     with tabs[1]:
         try:
             with get_session() as session:
-                history = _load_history(session, limit=50)
+                total_runs = session.execute(select(func.count(Run.id))).scalar_one()
         except Exception as exc:  # noqa: BLE001
             st.error(f"Failed to load history: {exc}")
             return
 
-        if not history:
+        if not total_runs:
             st.info("History is empty yet.")
             return
 
-        run_table = [
-            {
-                "Run ID": run.id,
-                "Kind": run.kind,
-                "Status": run.status,
-                "Created At": run.created_at,
-                "Started At": run.started_at,
-                "Finished At": run.finished_at,
-            }
-            for run in history
-        ]
+        with get_session() as session:
+            keyword_values = session.execute(
+                select(Keyword.keyword).distinct().order_by(Keyword.keyword)
+            ).scalars().all()
+            region_values = session.execute(
+                select(Keyword.region).distinct().order_by(Keyword.region)
+            ).scalars().all()
+
+        filter_cols = st.columns([2, 2])
+        with filter_cols[0]:
+            selected_keyword_filter = st.selectbox(
+                "Filter by keyword",
+                options=["All"] + keyword_values,
+                index=0,
+            )
+        with filter_cols[1]:
+            selected_region_filter = st.selectbox(
+                "Filter by region",
+                options=["All"] + region_values,
+                index=0,
+            )
+
+        with get_session() as session:
+            base_stmt = select(Run).order_by(desc(Run.id))
+            if selected_keyword_filter != "All" or selected_region_filter != "All":
+                base_stmt = (
+                    select(Run)
+                    .join(SerpResult, SerpResult.run_id == Run.id)
+                    .join(Keyword, Keyword.id == SerpResult.keyword_id)
+                )
+                if selected_keyword_filter != "All":
+                    base_stmt = base_stmt.where(Keyword.keyword == selected_keyword_filter)
+                if selected_region_filter != "All":
+                    base_stmt = base_stmt.where(Keyword.region == selected_region_filter)
+                base_stmt = base_stmt.order_by(desc(Run.id)).distinct()
+
+            total_runs = session.execute(
+                select(func.count()).select_from(base_stmt.subquery())
+            ).scalar_one()
+
+        page_size = st.selectbox("Page size", [25, 50, 100], index=1)
+        total_pages = max(1, (total_runs + page_size - 1) // page_size)
+        page = st.number_input("Page", min_value=1, max_value=total_pages, value=1, step=1)
+        offset = (page - 1) * page_size
+
+        with get_session() as session:
+            history = list(
+                session.execute(base_stmt.limit(page_size).offset(offset)).scalars()
+            )
+
+        run_ids = [run.id for run in history]
+        run_meta = {}
+        if run_ids:
+            with get_session() as session:
+                rows = session.execute(
+                    select(
+                        SerpResult.run_id,
+                        Keyword.keyword,
+                        Keyword.region,
+                        Keyword.language,
+                    )
+                    .join(Keyword, Keyword.id == SerpResult.keyword_id)
+                    .where(SerpResult.run_id.in_(run_ids))
+                ).all()
+            for run_id, keyword, region, language in rows:
+                meta = run_meta.setdefault(run_id, {"keywords": set(), "regions": set(), "languages": set()})
+                if keyword:
+                    meta["keywords"].add(keyword)
+                if region:
+                    meta["regions"].add(region)
+                if language:
+                    meta["languages"].add(language)
+
+        run_table = []
+        for run in history:
+            meta = run_meta.get(run.id, {})
+            keywords = ", ".join(sorted(meta.get("keywords", [])))
+            regions = ", ".join(sorted(meta.get("regions", [])))
+            languages = ", ".join(sorted(meta.get("languages", [])))
+            run_table.append(
+                {
+                    "Run ID": run.id,
+                    "Kind": run.kind,
+                    "Status": run.status,
+                    "Keyword(s)": keywords or "—",
+                    "Region(s)": regions or "—",
+                    "Language(s)": languages or "—",
+                    "Created At": run.created_at,
+                    "Started At": run.started_at,
+                    "Finished At": run.finished_at,
+                }
+            )
         st.subheader("Runs")
         st.dataframe(pd.DataFrame(run_table), width="stretch")
+        st.caption(f"Showing {offset + 1}–{min(offset + page_size, total_runs)} of {total_runs}")
 
         options = {
             f"Run {run.id} • {run.kind} • {run.created_at} • {run.status}": run.id
