@@ -188,6 +188,8 @@ def _render_tag_block(tag_data: dict | None, label: str) -> None:
     else:
         st.write(f"{label} hreflang: —")
 
+def _render_cell(value: str) -> None:
+    st.write(value)
 
 def _load_history(session, limit: int = 50, offset: int = 0) -> list[Run]:
     stmt = select(Run).order_by(desc(Run.id)).limit(limit).offset(offset)
@@ -418,7 +420,11 @@ def main() -> None:
         )
 
         tag_map = {}
+        tracked_domains = set()
         with get_session() as session:
+            tracked_domains = {
+                site.domain for site in session.query(TrackedSite).all()
+            }
             for row in filtered_rows:
                 existing = _load_latest_page_tag(session, run_id, row.link)
                 if existing:
@@ -450,16 +456,25 @@ def main() -> None:
             tags = tag_map.get(row.link, {})
             bot = tags.get("bot") or {}
             google = tags.get("googlebot") or {}
+            domain = extract_domain(row.link)
+            is_favorite = domain in tracked_domains
 
             cols = st.columns([1, 3, 3, 3, 2, 2, 2, 2, 1, 1])
-            cols[0].write(row.position)
-            cols[1].write(row.link)
-            cols[2].write(row.title or "—")
-            cols[3].write(row.snippet or "—")
-            cols[4].write(bot.get("canonical") or "—")
-            cols[5].write(bot.get("hreflang") or "—")
-            cols[6].write(google.get("canonical") or "—")
-            cols[7].write(google.get("hreflang") or "—")
+            _render_cell(str(row.position))
+            with cols[1]:
+                _render_cell(row.link)
+            with cols[2]:
+                _render_cell(row.title or "—")
+            with cols[3]:
+                _render_cell(row.snippet or "—")
+            with cols[4]:
+                _render_cell(bot.get("canonical") or "—")
+            with cols[5]:
+                _render_cell(str(bot.get("hreflang") or "—"))
+            with cols[6]:
+                _render_cell(google.get("canonical") or "—")
+            with cols[7]:
+                _render_cell(str(google.get("hreflang") or "—"))
 
             if cols[8].button("Check Tags", key=f"check_{row.id}"):
                 try:
@@ -479,19 +494,28 @@ def main() -> None:
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"Tag check failed: {exc}")
 
-            if cols[9].button("★", key=f"star_{row.id}"):
+            star_label = "★" if is_favorite else "☆"
+            if cols[9].button(
+                star_label,
+                key=f"star_{row.id}",
+                type="primary" if is_favorite else "secondary",
+            ):
                 try:
-                    domain = extract_domain(row.link)
                     with get_session() as session:
                         existing = (
                             session.query(TrackedSite)
                             .filter(TrackedSite.domain == domain)
                             .one_or_none()
                         )
-                        if not existing:
+                        if existing:
+                            session.delete(existing)
+                            session.commit()
+                            st.success(f"Removed {domain} from favorites")
+                        else:
                             session.add(TrackedSite(domain=domain))
                             session.commit()
-                    st.success(f"Tracking {domain}")
+                            st.success(f"Added {domain} to favorites")
+                    st.rerun()
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"Failed to track site: {exc}")
 
@@ -669,6 +693,8 @@ def main() -> None:
                                 "Keyword": keyword.keyword if keyword else "—",
                                 "Region": keyword.region if keyword else "—",
                                 "Language": keyword.language if keyword else "—",
+                                "Position": hit.position,
+                                "URL": hit.url,
                                 "Run ID": hit.run_id,
                             }
                         )
