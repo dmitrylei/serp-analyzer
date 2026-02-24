@@ -236,6 +236,24 @@ def _load_history(session, limit: int = 50, offset: int = 0) -> list[Run]:
     return list(session.execute(stmt).scalars())
 
 
+@st.cache_data(ttl=30)
+def _cached_keywords() -> list[str]:
+    with get_session() as session:
+        return session.execute(select(Keyword.keyword).distinct().order_by(Keyword.keyword)).scalars().all()
+
+
+@st.cache_data(ttl=30)
+def _cached_regions() -> list[str]:
+    with get_session() as session:
+        return session.execute(select(Keyword.region).distinct().order_by(Keyword.region)).scalars().all()
+
+
+@st.cache_data(ttl=30)
+def _cached_tracked_domains() -> set[str]:
+    with get_session() as session:
+        return {site.domain for site in session.query(TrackedSite).all()}
+
+
 def main() -> None:
     root = _find_project_root()
     if root is not None:
@@ -299,13 +317,8 @@ def main() -> None:
             st.info("History is empty yet.")
             return
 
-        with get_session() as session:
-            keyword_values = session.execute(
-                select(Keyword.keyword).distinct().order_by(Keyword.keyword)
-            ).scalars().all()
-            region_values = session.execute(
-                select(Keyword.region).distinct().order_by(Keyword.region)
-            ).scalars().all()
+        keyword_values = _cached_keywords()
+        region_values = _cached_regions()
 
         filter_cols = st.columns([2, 2])
         with filter_cols[0]:
@@ -464,11 +477,8 @@ def main() -> None:
         )
 
         tag_map = {}
-        tracked_domains = set()
+        tracked_domains = _cached_tracked_domains()
         with get_session() as session:
-            tracked_domains = {
-                site.domain for site in session.query(TrackedSite).all()
-            }
             for row in filtered_rows:
                 existing = _load_latest_page_tag(session, run_id, row.link)
                 if existing:
