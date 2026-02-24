@@ -883,6 +883,70 @@ def main() -> None:
                             )
                         st.dataframe(pd.DataFrame(table), width="stretch")
 
+            st.divider()
+            st.subheader("Tags History")
+            with get_session() as session:
+                watch_urls = session.query(WatchUrl).all()
+                watch_ids = [
+                    w.id for w in watch_urls if extract_domain(w.url) == site_domain
+                ]
+                if not watch_ids:
+                    st.info("No tag checks yet.")
+                else:
+                    tags = (
+                        session.query(PageTag)
+                        .filter(PageTag.watch_url_id.in_(watch_ids))
+                        .order_by(PageTag.created_at.asc())
+                        .limit(200)
+                        .all()
+                    )
+                    if not tags:
+                        st.info("No tag checks yet.")
+                    else:
+                        rows = []
+                        prev_bot = {"canonical": None, "hreflang": None}
+                        prev_google = {"canonical": None, "hreflang": None}
+                        for tag in tags:
+                            raw = tag.raw or {}
+                            bot = _extract_tag_block(raw, "bot") or {
+                                "canonical": tag.canonical,
+                                "hreflang": tag.hreflang,
+                            }
+                            google = _extract_tag_block(raw, "googlebot") or {}
+                            changed = False
+                            if bot.get("canonical") != prev_bot.get("canonical"):
+                                changed = True
+                            if bot.get("hreflang") != prev_bot.get("hreflang"):
+                                changed = True
+                            if google.get("canonical") != prev_google.get("canonical"):
+                                changed = True
+                            if google.get("hreflang") != prev_google.get("hreflang"):
+                                changed = True
+                            rows.append(
+                                {
+                                    "Date": tag.created_at,
+                                    "Run ID": tag.run_id,
+                                    "URL": session.get(WatchUrl, tag.watch_url_id).url
+                                    if tag.watch_url_id
+                                    else "—",
+                                    "Bot Canonical": bot.get("canonical") or "—",
+                                    "Bot Hreflang": bot.get("hreflang") or "—",
+                                    "GoogleBot Canonical": google.get("canonical") or "—",
+                                    "GoogleBot Hreflang": google.get("hreflang") or "—",
+                                    "_changed": changed,
+                                }
+                            )
+                            prev_bot = {"canonical": bot.get("canonical"), "hreflang": bot.get("hreflang")}
+                            prev_google = {"canonical": google.get("canonical"), "hreflang": google.get("hreflang")}
+
+                        df = pd.DataFrame(rows)
+                        def _highlight(row):
+                            if row.get("_changed"):
+                                return ["background-color:#ffebee"] * len(row)
+                            return [""] * len(row)
+                        df_display = df.drop(columns=["_changed"])
+                        st.dataframe(df_display.style.apply(_highlight, axis=1), width="stretch")
+
         st.divider()
         st.write("Remove tracked site")
         if sites:
