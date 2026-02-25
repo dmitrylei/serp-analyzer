@@ -228,6 +228,34 @@ def _render_tag_block(tag_data: dict | None, label: str) -> None:
     else:
         st.write(f"{label} hreflang: —")
 
+
+def _pick_preferred_tags(google: dict | None, bot: dict | None) -> tuple[str | None, dict | None]:
+    google = google or {}
+    bot = bot or {}
+    canonical = google.get("canonical") or bot.get("canonical")
+    hreflang = google.get("hreflang") or bot.get("hreflang")
+    return canonical, hreflang
+
+
+def _has_tag_mismatch(google: dict | None, bot: dict | None) -> bool:
+    google = google or {}
+    bot = bot or {}
+    if google.get("canonical") and bot.get("canonical") and google.get("canonical") != bot.get("canonical"):
+        return True
+    if google.get("hreflang") and bot.get("hreflang") and (google.get("hreflang") != bot.get("hreflang")):
+        return True
+    return False
+
+
+def _mismatch_details(google: dict | None, bot: dict | None) -> str:
+    google = google or {}
+    bot = bot or {}
+    g_can = google.get("canonical") or "—"
+    b_can = bot.get("canonical") or "—"
+    g_hre = google.get("hreflang") or "—"
+    b_hre = bot.get("hreflang") or "—"
+    return f"G canonical: {g_can}\nB canonical: {b_can}\nG hreflang: {g_hre}\nB hreflang: {b_hre}"
+
 def _render_cell(value: str) -> None:
     st.write(value)
 
@@ -490,16 +518,16 @@ def main() -> None:
                     }
 
         st.subheader("Results Table")
-        header_cols = st.columns([1, 3, 3, 3, 2, 2, 2, 2, 1, 1])
+        header_cols = st.columns([1, 3, 3, 3, 2, 2, 2, 3, 1, 1])
         headers = [
             "Position",
             "URL",
             "Meta Title",
             "Meta Description",
-            "Bot Canonical",
-            "Bot Hreflang",
-            "Google Bot Canonical",
-            "Google Bot Hreflang",
+            "Canonical",
+            "Hreflang",
+            "Mismatch",
+            "Mismatch Details",
             "Check",
             "★",
         ]
@@ -512,8 +540,10 @@ def main() -> None:
             google = tags.get("googlebot") or {}
             domain = extract_domain(row.link)
             is_favorite = domain in tracked_domains
+            canonical, hreflang = _pick_preferred_tags(google, bot)
+            mismatch = _has_tag_mismatch(google, bot)
 
-            cols = st.columns([1, 3, 3, 3, 2, 2, 2, 2, 1, 1])
+            cols = st.columns([1, 3, 3, 3, 2, 2, 2, 3, 1, 1])
             _render_cell(str(row.position))
             with cols[1]:
                 _render_cell(row.link)
@@ -522,13 +552,20 @@ def main() -> None:
             with cols[3]:
                 _render_cell(row.snippet or "—")
             with cols[4]:
-                _render_cell(bot.get("canonical") or "—")
+                _render_cell(canonical or "—")
             with cols[5]:
-                _render_cell(str(bot.get("hreflang") or "—"))
+                _render_cell(str(hreflang or "—"))
             with cols[6]:
-                _render_cell(google.get("canonical") or "—")
+                if mismatch:
+                    cols[6].markdown("<span style='color:#d32f2f;font-weight:600'>есть расхождения</span>", unsafe_allow_html=True)
+                else:
+                    _render_cell("—")
+
             with cols[7]:
-                _render_cell(str(google.get("hreflang") or "—"))
+                if mismatch:
+                    st.text(_mismatch_details(google, bot))
+                else:
+                    _render_cell("—")
 
             if cols[8].button("Check Tags", key=f"check_{row.id}"):
                 try:
@@ -744,8 +781,8 @@ def main() -> None:
                     last_google_hreflang: str | dict | None = None
                     for hit in hits:
                         keyword = session.get(Keyword, hit.keyword_id)
-                        google_canonical = "—"
-                        google_hreflang = "—"
+                        google_block = {}
+                        bot_block = {}
                         if hit.url:
                             watch = (
                                 session.query(WatchUrl)
@@ -764,14 +801,18 @@ def main() -> None:
                                 )
                                 if page_tag and isinstance(page_tag.raw, dict):
                                     google_block = _extract_tag_block(page_tag.raw, "googlebot") or {}
-                                    google_canonical = google_block.get("canonical") or "—"
-                                    google_hreflang = google_block.get("hreflang") or "—"
+                                    bot_block = _extract_tag_block(page_tag.raw, "bot") or {
+                                        "canonical": page_tag.canonical,
+                                        "hreflang": page_tag.hreflang,
+                                    }
                         changed = False
                         if last_google_canonical is not None or last_google_hreflang is not None:
-                            if google_canonical != (last_google_canonical or "—"):
+                            if google_block.get("canonical") != (last_google_canonical or "—"):
                                 changed = True
-                            if google_hreflang != (last_google_hreflang or "—"):
+                            if google_block.get("hreflang") != (last_google_hreflang or "—"):
                                 changed = True
+                        canonical, hreflang = _pick_preferred_tags(google_block, bot_block)
+                        mismatch = _has_tag_mismatch(google_block, bot_block)
                         rows.append(
                             {
                                 "Detected At": hit.detected_at,
@@ -780,14 +821,15 @@ def main() -> None:
                                 "Language": keyword.language if keyword else "—",
                                 "Position": hit.position,
                                 "URL": hit.url,
-                                "GoogleBot Canonical": google_canonical,
-                                "GoogleBot Hreflang": google_hreflang,
+                                "Canonical": canonical or "—",
+                                "Hreflang": hreflang or "—",
+                                "Mismatch": "есть расхождения" if mismatch else "—",
                                 "Run ID": hit.run_id,
                                 "_changed": changed,
                             }
                         )
-                        last_google_canonical = google_canonical
-                        last_google_hreflang = google_hreflang
+                        last_google_canonical = google_block.get("canonical") if google_block else None
+                        last_google_hreflang = google_block.get("hreflang") if google_block else None
                     df = pd.DataFrame(rows)
                     def _highlight(row):
                         if row.get("_changed"):
@@ -922,6 +964,8 @@ def main() -> None:
                                 changed = True
                             if google.get("hreflang") != prev_google.get("hreflang"):
                                 changed = True
+                            canonical, hreflang = _pick_preferred_tags(google, bot)
+                            mismatch = _has_tag_mismatch(google, bot)
                             rows.append(
                                 {
                                     "Date": tag.created_at,
@@ -929,10 +973,10 @@ def main() -> None:
                                     "URL": session.get(WatchUrl, tag.watch_url_id).url
                                     if tag.watch_url_id
                                     else "—",
-                                    "Bot Canonical": bot.get("canonical") or "—",
-                                    "Bot Hreflang": bot.get("hreflang") or "—",
-                                    "GoogleBot Canonical": google.get("canonical") or "—",
-                                    "GoogleBot Hreflang": google.get("hreflang") or "—",
+                                    "Canonical": canonical or "—",
+                                    "Hreflang": hreflang or "—",
+                                    "Mismatch": "есть расхождения" if mismatch else "—",
+                                    "Mismatch Details": _mismatch_details(google, bot) if mismatch else "—",
                                     "_changed": changed,
                                 }
                             )
