@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from serp_monitor.config.settings import Settings
-from serp_monitor.db.models import PageTag, WatchUrl
+from serp_monitor.db.models import PageTag, WatchUrl, CanonicalSite, CanonicalEdge, CanonicalFavorite
 from serp_monitor.parsers.page_tags import parse_page_tags
 
 
@@ -118,8 +118,44 @@ class TagService:
             },
         )
         session.add(row)
+        self._record_canonical_chain(session, run_id, url, google_parsed, bot_parsed)
         session.commit()
         return {
             "bot": bot_parsed,
             "googlebot": google_parsed,
         }
+
+    def _record_canonical_chain(
+        self,
+        session: Session,
+        run_id: int,
+        source_url: str,
+        google_parsed: dict[str, Any],
+        bot_parsed: dict[str, Any],
+    ) -> None:
+        google_can = google_parsed.get("canonical")
+        bot_can = bot_parsed.get("canonical")
+        chosen = google_can or bot_can
+        if not chosen:
+            return
+
+        existing_site = (
+            session.query(CanonicalSite).filter(CanonicalSite.url == chosen).one_or_none()
+        )
+        if not existing_site:
+            session.add(CanonicalSite(url=chosen))
+        existing_fav = (
+            session.query(CanonicalFavorite).filter(CanonicalFavorite.url == chosen).one_or_none()
+        )
+        if not existing_fav:
+            session.add(CanonicalFavorite(url=chosen))
+
+        session.add(
+            CanonicalEdge(
+                run_id=run_id,
+                source_url=source_url,
+                canonical_url=chosen,
+                canonical_google=google_can,
+                canonical_bot=bot_can,
+            )
+        )

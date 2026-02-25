@@ -4,6 +4,9 @@ from serp_monitor.db.models.scheduler_status import SchedulerStatus
 from serp_monitor.db.models.page_tag import PageTag
 from serp_monitor.db.models.tracked_site import TrackedSite
 from serp_monitor.db.models.tracked_hit import TrackedHit
+from serp_monitor.db.models.canonical_site import CanonicalSite
+from serp_monitor.db.models.canonical_edge import CanonicalEdge
+from serp_monitor.db.models.canonical_favorite import CanonicalFavorite
 from serp_monitor.db.models.run import Run, RunStatus
 from serp_monitor.db.models.serp_result import SerpResult
 from serp_monitor.db.models.watch_url import WatchUrl
@@ -15,6 +18,9 @@ __all__ = [
     "PageTag",
     "TrackedSite",
     "TrackedHit",
+    "CanonicalSite",
+    "CanonicalEdge",
+    "CanonicalFavorite",
     "Run",
     "RunStatus",
     "SerpResult",

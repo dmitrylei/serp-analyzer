@@ -28,6 +28,9 @@ from serp_monitor.db.models import (
     TrackedHit,
     TrackedSite,
     WatchUrl,
+    CanonicalSite,
+    CanonicalEdge,
+    CanonicalFavorite,
 )
 from serp_monitor.db.session import get_session
 from serp_monitor.providers.serper import SerperClient
@@ -293,7 +296,7 @@ def main() -> None:
     if not os.getenv("DATABASE_URL"):
         st.warning("DATABASE_URL is not set. Add it to .env to enable history.")
 
-    tabs = st.tabs(["New Query", "History", "Keywords", "Sites", "Settings"])
+    tabs = st.tabs(["New Query", "History", "Keywords", "Sites", "Canonical", "Settings"])
 
     with tabs[0]:
         with st.form("serp_form"):
@@ -1010,6 +1013,95 @@ def main() -> None:
                     st.error(f"Failed to remove site: {exc}")
 
     with tabs[4]:
+        st.subheader("Canonical Chain")
+        try:
+            with get_session() as session:
+                canonical_sites = (
+                    session.query(CanonicalSite).order_by(CanonicalSite.id.desc()).limit(200).all()
+                )
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Failed to load canonical sites: {exc}")
+            return
+
+        if not canonical_sites:
+            st.info("No canonical sites tracked yet.")
+        else:
+            rows = []
+            with get_session() as session:
+                for site in canonical_sites:
+                    first_edge = (
+                        session.query(CanonicalEdge)
+                        .filter(CanonicalEdge.canonical_url == site.url)
+                        .order_by(CanonicalEdge.observed_at.asc())
+                        .first()
+                    )
+                    if not first_edge:
+                        continue
+                    keyword = None
+                    geo = "—"
+                    try:
+                        serp = (
+                            session.query(SerpResult)
+                            .filter(SerpResult.run_id == first_edge.run_id)
+                            .first()
+                        )
+                        if serp:
+                            keyword = session.get(Keyword, serp.keyword_id)
+                            if keyword:
+                                geo = f"{keyword.region}/{keyword.language}"
+                    except Exception:
+                        keyword = None
+                    keyword_geo = "—"
+                    if keyword:
+                        keyword_geo = f"{keyword.keyword} / {geo}"
+                    rows.append(
+                        {
+                            "Canonical Site": site.url,
+                            "First Site": first_edge.source_url,
+                            "First Date Time": first_edge.observed_at,
+                            "Keywords / GEO": keyword_geo,
+                        }
+                    )
+            st.dataframe(pd.DataFrame(rows), width="stretch")
+
+        st.divider()
+        st.subheader("Canonical Favorites")
+        try:
+            with get_session() as session:
+                favorites = session.query(CanonicalFavorite).order_by(CanonicalFavorite.id.desc()).all()
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Failed to load canonical favorites: {exc}")
+            return
+
+        fav_urls = [f.url for f in favorites]
+        st.write("Add canonical favorite")
+        new_url = st.text_input("Canonical URL", value="")
+        if st.button("Add"):
+            if new_url.strip():
+                with get_session() as session:
+                    exists = (
+                        session.query(CanonicalFavorite)
+                        .filter(CanonicalFavorite.url == new_url.strip())
+                        .one_or_none()
+                    )
+                    if not exists:
+                        session.add(CanonicalFavorite(url=new_url.strip()))
+                        session.commit()
+                st.success("Added")
+                st.rerun()
+
+        if fav_urls:
+            remove = st.selectbox("Remove canonical favorite", fav_urls)
+            if st.button("Remove"):
+                with get_session() as session:
+                    row = session.query(CanonicalFavorite).filter(CanonicalFavorite.url == remove).one_or_none()
+                    if row:
+                        session.delete(row)
+                        session.commit()
+                st.success("Removed")
+                st.rerun()
+
+    with tabs[5]:
         _scheduler_status_block()
 
 
