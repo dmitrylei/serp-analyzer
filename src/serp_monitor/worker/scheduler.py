@@ -9,10 +9,11 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from sqlalchemy import select
 
 from serp_monitor.config.settings import get_settings
-from serp_monitor.db.models import Keyword, KeywordSchedule, SchedulerStatus
+from serp_monitor.db.models import Keyword, KeywordSchedule, SchedulerStatus, Run, RunStatus, TrackedSite
 from serp_monitor.db.session import get_session
 from serp_monitor.providers.serper import SerperClient
 from serp_monitor.services.serp_service import SerpService
+from serp_monitor.services.tag_service import TagService
 
 
 def _now_tz() -> datetime:
@@ -62,6 +63,35 @@ def _run_due_schedules() -> None:
             session.commit()
 
 
+def _run_favorite_tag_checks() -> None:
+    now = _now_tz()
+    tag_service = TagService(get_settings())
+
+    with get_session() as session:
+        sites = list(session.query(TrackedSite).all())
+        if not sites:
+            return
+        run = Run(kind="favorites", status=RunStatus.running, started_at=now)
+        session.add(run)
+        session.flush()
+
+        try:
+            for site in sites:
+                # use https by default; user can add full URL in watch list later if needed
+                url = f"https://{site.domain}"
+                tag_service.check_url(session, run.id, url, region=None, language=None)
+            run.status = RunStatus.success
+            run.finished_at = _now_tz()
+            session.commit()
+        except Exception as exc:  # noqa: BLE001
+            session.rollback()
+            run.status = RunStatus.failed
+            run.error = str(exc)[:500]
+            run.finished_at = _now_tz()
+            session.add(run)
+            session.commit()
+
+
 def start_scheduler() -> BackgroundScheduler:
     settings = get_settings()
     scheduler = BackgroundScheduler(timezone=settings.scheduler_tz)
@@ -72,6 +102,15 @@ def start_scheduler() -> BackgroundScheduler:
         id="keyword_schedule_runner",
         coalesce=True,
         misfire_grace_time=90,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _run_favorite_tag_checks,
+        "interval",
+        hours=1,
+        id="favorite_tag_checks",
+        coalesce=True,
+        misfire_grace_time=300,
         max_instances=1,
     )
     scheduler.start()
@@ -89,6 +128,15 @@ def run_forever() -> None:
         id="keyword_schedule_runner",
         coalesce=True,
         misfire_grace_time=90,
+        max_instances=1,
+    )
+    scheduler.add_job(
+        _run_favorite_tag_checks,
+        "interval",
+        hours=1,
+        id="favorite_tag_checks",
+        coalesce=True,
+        misfire_grace_time=300,
         max_instances=1,
     )
     scheduler.start()
