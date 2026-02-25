@@ -1076,7 +1076,7 @@ def main() -> None:
         fav_urls = [f.url for f in favorites]
         st.write("Add canonical favorite")
         new_url = st.text_input("Canonical URL", value="")
-        if st.button("Add"):
+        if st.button("Add", key="canonical_fav_add"):
             if new_url.strip():
                 with get_session() as session:
                     exists = (
@@ -1091,8 +1091,8 @@ def main() -> None:
                 st.rerun()
 
         if fav_urls:
-            remove = st.selectbox("Remove canonical favorite", fav_urls)
-            if st.button("Remove"):
+            remove = st.selectbox("Remove canonical favorite", fav_urls, key="canonical_fav_remove_select")
+            if st.button("Remove", key="canonical_fav_remove_btn"):
                 with get_session() as session:
                     row = session.query(CanonicalFavorite).filter(CanonicalFavorite.url == remove).one_or_none()
                     if row:
