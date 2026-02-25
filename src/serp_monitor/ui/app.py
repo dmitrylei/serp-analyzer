@@ -1091,15 +1091,108 @@ def main() -> None:
                 st.rerun()
 
         if fav_urls:
-            remove = st.selectbox("Remove canonical favorite", fav_urls, key="canonical_fav_remove_select")
+            remove = st.selectbox(
+                "Remove canonical favorite", fav_urls, key="canonical_fav_remove_select"
+            )
             if st.button("Remove", key="canonical_fav_remove_btn"):
                 with get_session() as session:
-                    row = session.query(CanonicalFavorite).filter(CanonicalFavorite.url == remove).one_or_none()
+                    row = (
+                        session.query(CanonicalFavorite)
+                        .filter(CanonicalFavorite.url == remove)
+                        .one_or_none()
+                    )
                     if row:
                         session.delete(row)
                         session.commit()
                 st.success("Removed")
                 st.rerun()
+
+        st.divider()
+        st.subheader("Canonical Favorites Checks")
+        check_rows = []
+        with get_session() as session:
+            for url in fav_urls:
+                watch = session.query(WatchUrl).filter(WatchUrl.url == url).one_or_none()
+                if not watch:
+                    check_rows.append(
+                        {
+                            "URL": url,
+                            "Last Checked": "—",
+                            "Canonical": "—",
+                            "Hreflang": "—",
+                        }
+                    )
+                    continue
+                tag = (
+                    session.query(PageTag)
+                    .filter(PageTag.watch_url_id == watch.id)
+                    .order_by(PageTag.created_at.desc())
+                    .first()
+                )
+                if not tag:
+                    check_rows.append(
+                        {
+                            "URL": url,
+                            "Last Checked": "—",
+                            "Canonical": "—",
+                            "Hreflang": "—",
+                        }
+                    )
+                    continue
+                raw = tag.raw or {}
+                google = raw.get("googlebot") or {}
+                bot = raw.get("bot") or {}
+                canonical = google.get("canonical") or bot.get("canonical") or "—"
+                hreflang = google.get("hreflang") or bot.get("hreflang") or "—"
+                check_rows.append(
+                    {
+                        "URL": url,
+                        "Last Checked": tag.created_at,
+                        "Canonical": canonical,
+                        "Hreflang": hreflang,
+                    }
+                )
+        if check_rows:
+            st.dataframe(pd.DataFrame(check_rows), width="stretch")
+        else:
+            st.info("No canonical favorites yet.")
+
+        st.divider()
+        st.subheader("Canonical Chain (changes over time)")
+        if not fav_urls:
+            st.info("No canonical favorites yet.")
+        else:
+            selected_url = st.selectbox(
+                "Select site for chain", fav_urls, key="canonical_chain_select"
+            )
+            with get_session() as session:
+                edges = (
+                    session.query(CanonicalEdge)
+                    .filter(CanonicalEdge.source_url == selected_url)
+                    .order_by(CanonicalEdge.observed_at.asc())
+                    .all()
+                )
+            chain = [selected_url]
+            last = selected_url
+            for edge in edges:
+                target = edge.canonical_url
+                if not target:
+                    continue
+                if target != last:
+                    chain.append(target)
+                    last = target
+
+            st.write(" → ".join(chain))
+            if edges:
+                detail_rows = [
+                    {
+                        "Observed At": e.observed_at,
+                        "Canonical URL": e.canonical_url or "—",
+                        "Run ID": e.run_id,
+                    }
+                    for e in edges
+                ]
+                st.dataframe(pd.DataFrame(detail_rows), width="stretch")
 
     with tabs[5]:
         _scheduler_status_block()
