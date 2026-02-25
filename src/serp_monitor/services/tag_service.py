@@ -47,23 +47,23 @@ class TagService:
         wait=wait_exponential(multiplier=1, min=1, max=8),
         retry=retry_if_exception_type(RetriableStatus),
     )
-    def _fetch_html(self, url: str, headers: dict[str, str]) -> str:
+    def _fetch_html(self, url: str, headers: dict[str, str]) -> tuple[str, str | None]:
         timeout = httpx.Timeout(self._settings.http_timeout)
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             response = client.get(url, headers=headers)
             if response.status_code in {403, 429}:
                 raise RetriableStatus(response.status_code)
             response.raise_for_status()
-            return response.text
+            return response.text, response.headers.get("Link")
 
     def _safe_fetch(self, url: str, headers: dict[str, str]) -> dict[str, Any]:
         try:
-            html = self._fetch_html(url, headers)
-            return {"html": html, "status": 200, "error": None}
+            html, link_header = self._fetch_html(url, headers)
+            return {"html": html, "link": link_header, "status": 200, "error": None}
         except RetriableStatus as exc:
-            return {"html": None, "status": exc.status_code, "error": str(exc)}
+            return {"html": None, "link": None, "status": exc.status_code, "error": str(exc)}
         except Exception as exc:  # noqa: BLE001
-            return {"html": None, "status": None, "error": str(exc)}
+            return {"html": None, "link": None, "status": None, "error": str(exc)}
 
     def _get_or_create_watch_url(
         self, session: Session, url: str, region: str | None
@@ -97,8 +97,8 @@ class TagService:
         bot_fetch = self._safe_fetch(url, self._headers(bot_ua, language))
         google_fetch = self._safe_fetch(url, self._headers(googlebot_ua, language))
 
-        bot_parsed = parse_page_tags(bot_fetch["html"] or "")
-        google_parsed = parse_page_tags(google_fetch["html"] or "")
+        bot_parsed = parse_page_tags(bot_fetch["html"] or "", bot_fetch.get("link"))
+        google_parsed = parse_page_tags(google_fetch["html"] or "", google_fetch.get("link"))
         bot_parsed.update({"status": bot_fetch["status"], "error": bot_fetch["error"]})
         google_parsed.update(
             {"status": google_fetch["status"], "error": google_fetch["error"]}
