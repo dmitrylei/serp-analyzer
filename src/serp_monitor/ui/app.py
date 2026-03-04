@@ -1330,19 +1330,44 @@ def main() -> None:
                 )
                 st.line_chart(df_chart.set_index("Date")["Position Value"])
 
-                # First drop
+                # First seen / drop / back (3 consecutive)
                 first_hit_time = None
                 drop_time = None
                 last_link_before = None
+                streak_missing = 0
+                streak_found = 0
+                last_state = None
+                first_seen = None
+                drop_confirmed_at = None
+                back_confirmed_at = None
+                last_found_link = None
+
+                # runs are ascending
                 for r in runs:
                     best = best_by_run.get(r.id)
-                    if best and first_hit_time is None:
-                        first_hit_time = r.created_at
-                    if best:
-                        last_link_before = best["link"]
-                    if first_hit_time and best is None:
-                        drop_time = r.created_at
-                        break
+                    is_found = best is not None
+                    if is_found and first_seen is None:
+                        first_seen = r.created_at
+                    if is_found:
+                        last_found_link = best["link"]
+                        streak_found += 1
+                        streak_missing = 0
+                    else:
+                        streak_missing += 1
+                        streak_found = 0
+
+                    if streak_missing >= 3 and last_state != "dropped":
+                        drop_confirmed_at = r.created_at
+                        last_state = "dropped"
+                    if streak_found >= 3 and last_state == "dropped":
+                        back_confirmed_at = r.created_at
+                        last_state = "back"
+
+                if first_seen:
+                    first_hit_time = first_seen
+                    last_link_before = last_found_link
+                if drop_confirmed_at:
+                    drop_time = drop_confirmed_at
 
                 if drop_time:
                     st.info(f"First drop out of Top-10: {drop_time}")
@@ -1353,6 +1378,31 @@ def main() -> None:
                     return
 
                 events: list[dict[str, str | datetime]] = []
+
+                if first_seen:
+                    events.append(
+                        {
+                            "Time": first_seen,
+                            "Event": "First seen",
+                            "Details": "First time found in Top-10",
+                        }
+                    )
+                if drop_confirmed_at:
+                    events.append(
+                        {
+                            "Time": drop_confirmed_at,
+                            "Event": "Dropped",
+                            "Details": "Not in Top-10 for 3 consecutive runs",
+                        }
+                    )
+                if back_confirmed_at:
+                    events.append(
+                        {
+                            "Time": back_confirmed_at,
+                            "Event": "Back",
+                            "Details": "Found in Top-10 for 3 consecutive runs",
+                        }
+                    )
 
                 with get_session() as session:
                     redirect_events = (
@@ -1458,9 +1508,18 @@ def main() -> None:
                         {"Time": drop_time, "Event": "No activity", "Details": "No changes detected"}
                     )
 
-                events_df = pd.DataFrame(events).sort_values("Time")
+                events_df = pd.DataFrame(events).sort_values("Time", ascending=True)
                 st.subheader("Events after drop")
-                st.dataframe(events_df, width="stretch")
+                if not events_df.empty and "Event" in events_df.columns:
+                    def _event_style(row):
+                        if row.get("Event") == "Dropped":
+                            return ["color:#c62828"] * len(row)
+                        if row.get("Event") == "Back":
+                            return ["color:#2e7d32"] * len(row)
+                        return ["" for _ in row]
+                    st.dataframe(events_df.style.apply(_event_style, axis=1), width="stretch")
+                else:
+                    st.dataframe(events_df, width="stretch")
 
     with tabs[6]:
         _scheduler_status_block()
