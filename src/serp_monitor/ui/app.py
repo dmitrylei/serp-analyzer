@@ -909,6 +909,39 @@ def main() -> None:
                     st.info("No detections yet.")
 
             st.divider()
+            st.subheader("Redirect History")
+            with get_session() as session:
+                redirects = (
+                    session.query(RedirectEvent)
+                    .filter(RedirectEvent.source_domain == site_domain)
+                    .order_by(RedirectEvent.observed_at.desc())
+                    .limit(200)
+                    .all()
+                )
+                if not redirects:
+                    st.info("No redirect events yet.")
+                else:
+                    rows = []
+                    for ev in redirects:
+                        status = (
+                            "redirecting"
+                            if ev.final_domain and ev.final_domain != ev.source_domain
+                            else "stopped"
+                        )
+                        rows.append(
+                            {
+                                "Time": ev.observed_at,
+                                "From": ev.source_domain,
+                                "To": ev.final_domain,
+                                "Final URL": ev.final_url,
+                                "Status": status,
+                                "Chain": " → ".join(ev.chain or []),
+                                "Run ID": ev.run_id,
+                            }
+                        )
+                    st.dataframe(pd.DataFrame(rows), width="stretch")
+
+            st.divider()
             st.subheader("Ranking History (Top-10 or Not in Top-10)")
             with get_session() as session:
                 keyword_ids = (
