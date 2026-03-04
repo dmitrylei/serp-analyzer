@@ -203,8 +203,15 @@ class TagService:
                 )
             return
 
-        # Redirect unchanged -> skip
+        # Redirect unchanged -> skip event, but ensure target is tracked
         if last_event and last_event.final_domain == final_domain and last_event.final_url == final_url:
+            existing = (
+                session.query(TrackedSite)
+                .filter(TrackedSite.domain == final_domain)
+                .one_or_none()
+            )
+            if not existing:
+                session.add(TrackedSite(domain=final_domain))
             return
 
         session.add(

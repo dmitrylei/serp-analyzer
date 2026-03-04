@@ -214,45 +214,32 @@ def _build_redirect_chain(session, domain: str) -> list[str]:
 
 def _build_canonical_chain(session, domain: str) -> list[str]:
     chain = [domain]
-    seen = {domain}
-
-    # upstream: who had canonical pointing to this domain
-    current = domain
-    while True:
-        ev = (
-            session.query(CanonicalEdge)
-            .filter(CanonicalEdge.canonical_url.contains(current))
-            .order_by(CanonicalEdge.observed_at.asc())
-            .first()
-        )
-        if not ev:
-            break
-        src_domain = extract_domain(ev.source_url)
-        if not src_domain or src_domain in seen:
-            break
-        chain.insert(0, src_domain)
-        seen.add(src_domain)
-        current = src_domain
-
-    # downstream: where this domain's canonical points to (latest change)
-    current = domain
-    while True:
-        ev = (
-            session.query(CanonicalEdge)
-            .filter(CanonicalEdge.source_url.contains(current))
-            .order_by(CanonicalEdge.observed_at.desc())
-            .first()
-        )
-        if not ev or not ev.canonical_url:
-            break
-        can_domain = extract_domain(ev.canonical_url)
-        if not can_domain or can_domain in seen:
-            break
+    last = domain
+    edges = (
+        session.query(CanonicalEdge)
+        .filter(CanonicalEdge.source_url.contains(domain))
+        .order_by(CanonicalEdge.observed_at.asc())
+        .all()
+    )
+    for ev in edges:
+        can_domain = extract_domain(ev.canonical_url or "")
+        if not can_domain or can_domain == last:
+            continue
         chain.append(can_domain)
-        seen.add(can_domain)
-        current = can_domain
-
+        last = can_domain
     return chain
+
+
+def _find_canonical_origin_domain(session, domain: str) -> str | None:
+    ev = (
+        session.query(CanonicalEdge)
+        .filter(CanonicalEdge.canonical_url.contains(domain))
+        .order_by(CanonicalEdge.observed_at.asc())
+        .first()
+    )
+    if not ev:
+        return None
+    return extract_domain(ev.source_url)
 
 
 def _is_failure(block: dict | None) -> bool:
@@ -1355,7 +1342,10 @@ def main() -> None:
                 else:
                     st.caption("First seen: —")
 
-                chain = _build_canonical_chain(session, extract_domain(selected_url))
+                selected_domain = extract_domain(selected_url)
+                origin_domain = _find_canonical_origin_domain(session, selected_domain)
+                chain_domain = origin_domain or selected_domain
+                chain = _build_canonical_chain(session, chain_domain)
                 if chain:
                     st.write(" → ".join(chain))
 
