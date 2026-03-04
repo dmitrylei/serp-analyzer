@@ -922,7 +922,7 @@ def main() -> None:
                         session.query(Run)
                         .join(SerpResult, SerpResult.run_id == Run.id)
                         .filter(SerpResult.keyword_id == selected_kw_id)
-                        .order_by(Run.created_at.asc())
+                        .order_by(Run.created_at.desc())
                         .distinct()
                         .all()
                     )
@@ -977,7 +977,7 @@ def main() -> None:
                     tags = (
                         session.query(PageTag)
                         .filter(PageTag.watch_url_id.in_(watch_ids))
-                        .order_by(PageTag.created_at.asc())
+                        .order_by(PageTag.created_at.desc())
                         .limit(200)
                         .all()
                     )
