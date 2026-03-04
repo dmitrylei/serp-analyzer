@@ -1374,23 +1374,31 @@ def main() -> None:
                         )
 
                     # Canonical / hreflang changes after drop
-                    hit_urls = (
-                        session.query(TrackedHit.url)
-                        .filter(
-                            TrackedHit.tracked_site_id == site_id,
-                            TrackedHit.keyword_id == selected_kw_id,
+                    watch_urls = session.query(WatchUrl).all()
+                    watch_ids = [
+                        w.id for w in watch_urls if extract_domain(w.url) == site_domain
+                    ]
+                    if watch_ids:
+                        baseline_tag = (
+                            session.query(PageTag)
+                            .filter(
+                                PageTag.watch_url_id.in_(watch_ids),
+                                PageTag.created_at < drop_time,
+                            )
+                            .order_by(PageTag.created_at.desc())
+                            .first()
                         )
-                        .distinct()
-                        .all()
-                    )
-                    hit_urls = [u for (u,) in hit_urls if u]
-                    if hit_urls:
-                        watch_ids = (
-                            session.query(WatchUrl.id)
-                            .filter(WatchUrl.url.in_(hit_urls))
-                            .all()
-                        )
-                        watch_ids = [wid for (wid,) in watch_ids]
+                        last_can = None
+                        last_hre = None
+                        if baseline_tag:
+                            raw = baseline_tag.raw or {}
+                            google = _extract_tag_block(raw, "googlebot") or {}
+                            bot = _extract_tag_block(raw, "bot") or {
+                                "canonical": baseline_tag.canonical,
+                                "hreflang": baseline_tag.hreflang,
+                            }
+                            last_can, last_hre = _pick_preferred_tags(google, bot)
+
                         tags = (
                             session.query(PageTag)
                             .filter(
@@ -1400,8 +1408,6 @@ def main() -> None:
                             .order_by(PageTag.created_at.asc())
                             .all()
                         )
-                        last_can = None
-                        last_hre = None
                         for tag in tags:
                             raw = tag.raw or {}
                             google = _extract_tag_block(raw, "googlebot") or {}
@@ -1410,20 +1416,20 @@ def main() -> None:
                                 "hreflang": tag.hreflang,
                             }
                             canonical, hreflang = _pick_preferred_tags(google, bot)
-                            if last_can is not None and canonical != last_can:
+                            if canonical != last_can:
                                 events.append(
                                     {
                                         "Time": tag.created_at,
                                         "Event": "Canonical changed",
-                                        "Details": f"{last_can} → {canonical}",
+                                        "Details": f"{last_can or '—'} → {canonical or '—'}",
                                     }
                                 )
-                            if last_hre is not None and hreflang != last_hre:
+                            if hreflang != last_hre:
                                 events.append(
                                     {
                                         "Time": tag.created_at,
                                         "Event": "Hreflang changed",
-                                        "Details": "Changed",
+                                        "Details": f"{last_hre or '—'} → {hreflang or '—'}",
                                     }
                                 )
                             last_can = canonical
