@@ -169,6 +169,92 @@ def _extract_tag_block(raw: dict | None, key: str) -> dict | None:
     return None
 
 
+def _build_redirect_chain(session, domain: str) -> list[str]:
+    chain = [domain]
+    seen = {domain}
+
+    # upstream: who redirected to this domain
+    current = domain
+    while True:
+        ev = (
+            session.query(RedirectEvent)
+            .filter(
+                RedirectEvent.final_domain == current,
+                RedirectEvent.source_domain != current,
+            )
+            .order_by(RedirectEvent.observed_at.asc())
+            .first()
+        )
+        if not ev or not ev.source_domain or ev.source_domain in seen:
+            break
+        chain.insert(0, ev.source_domain)
+        seen.add(ev.source_domain)
+        current = ev.source_domain
+
+    # downstream: where this domain redirects to now (latest change)
+    current = domain
+    while True:
+        ev = (
+            session.query(RedirectEvent)
+            .filter(
+                RedirectEvent.source_domain == current,
+                RedirectEvent.final_domain != current,
+            )
+            .order_by(RedirectEvent.observed_at.desc())
+            .first()
+        )
+        if not ev or not ev.final_domain or ev.final_domain in seen:
+            break
+        chain.append(ev.final_domain)
+        seen.add(ev.final_domain)
+        current = ev.final_domain
+
+    return chain
+
+
+def _build_canonical_chain(session, domain: str) -> list[str]:
+    chain = [domain]
+    seen = {domain}
+
+    # upstream: who had canonical pointing to this domain
+    current = domain
+    while True:
+        ev = (
+            session.query(CanonicalEdge)
+            .filter(CanonicalEdge.canonical_url.contains(current))
+            .order_by(CanonicalEdge.observed_at.asc())
+            .first()
+        )
+        if not ev:
+            break
+        src_domain = extract_domain(ev.source_url)
+        if not src_domain or src_domain in seen:
+            break
+        chain.insert(0, src_domain)
+        seen.add(src_domain)
+        current = src_domain
+
+    # downstream: where this domain's canonical points to (latest change)
+    current = domain
+    while True:
+        ev = (
+            session.query(CanonicalEdge)
+            .filter(CanonicalEdge.source_url.contains(current))
+            .order_by(CanonicalEdge.observed_at.desc())
+            .first()
+        )
+        if not ev or not ev.canonical_url:
+            break
+        can_domain = extract_domain(ev.canonical_url)
+        if not can_domain or can_domain in seen:
+            break
+        chain.append(can_domain)
+        seen.add(can_domain)
+        current = can_domain
+
+    return chain
+
+
 def _is_failure(block: dict | None) -> bool:
     if not block:
         return True
@@ -937,47 +1023,13 @@ def main() -> None:
                         f"Added via redirect from {redirect_origin.source_domain} "
                         f"(first seen {redirect_origin.observed_at})"
                     )
-                    origin_events = (
-                        session.query(RedirectEvent)
-                        .filter(RedirectEvent.final_domain == site_domain)
-                        .order_by(RedirectEvent.observed_at.asc())
-                        .all()
-                    )
-                    if origin_events:
-                        origin_chain = [origin_events[0].source_domain]
-                        for ev in origin_events:
-                            if ev.final_domain and (not origin_chain or origin_chain[-1] != ev.final_domain):
-                                origin_chain.append(ev.final_domain)
-                        if len(origin_chain) > 1:
-                            st.caption("Redirect chain: " + " → ".join(origin_chain))
+                redirect_chain = _build_redirect_chain(session, site_domain)
+                if redirect_chain:
+                    st.caption("Redirect chain: " + " → ".join(redirect_chain))
 
-                chain_events = (
-                    session.query(RedirectEvent)
-                    .filter(RedirectEvent.source_domain == site_domain)
-                    .order_by(RedirectEvent.observed_at.asc())
-                    .all()
-                )
-                if chain_events:
-                    chain = [site_domain]
-                    for ev in chain_events:
-                        if ev.final_domain and ev.final_domain != site_domain:
-                            if not chain or chain[-1] != ev.final_domain:
-                                chain.append(ev.final_domain)
-                    if len(chain) > 1:
-                        st.caption("Redirect chain: " + " → ".join(chain))
-
-                canonical_events = (
-                    session.query(CanonicalEdge)
-                    .filter(CanonicalEdge.source_url.contains(site_domain))
-                    .order_by(CanonicalEdge.observed_at.asc())
-                    .all()
-                )
-                canon_chain = [site_domain]
-                for ev in canonical_events:
-                    can_domain = extract_domain(ev.canonical_url or "")
-                    if can_domain and (not canon_chain or canon_chain[-1] != can_domain):
-                        canon_chain.append(can_domain)
-                st.caption("Canonical chain: " + " → ".join(canon_chain))
+                canon_chain = _build_canonical_chain(session, site_domain)
+                if canon_chain:
+                    st.caption("Canonical chain: " + " → ".join(canon_chain))
 
                 hits = list(
                     session.query(TrackedHit)
@@ -1297,10 +1349,15 @@ def main() -> None:
 
                 if first_seen:
                     st.caption(
-                        f"First seen: {first_seen} • From {first_source or '—'} • {keyword_geo}"
+                        f"First seen: {first_seen} • From {first_source or '—'} • {keyword_geo} • "
+                        f"Added to canonical favorites automatically"
                     )
                 else:
                     st.caption("First seen: —")
+
+                chain = _build_canonical_chain(session, extract_domain(selected_url))
+                if chain:
+                    st.write(" → ".join(chain))
 
                 edges = (
                     session.query(CanonicalEdge)
@@ -1308,21 +1365,9 @@ def main() -> None:
                     .order_by(CanonicalEdge.observed_at.asc())
                     .all()
                 )
-
                 if not edges:
                     st.info("No canonical chain events for this site yet.")
                 else:
-                    chain_parts = []
-                    for ev in edges:
-                        src_domain = extract_domain(ev.source_url)
-                        can_domain = extract_domain(ev.canonical_url or "")
-                        if src_domain:
-                            chain_parts.append(src_domain)
-                        if can_domain and (not chain_parts or chain_parts[-1] != can_domain):
-                            chain_parts.append(can_domain)
-                    chain_text = " → ".join(chain_parts) if chain_parts else selected_url
-                    st.write(chain_text)
-
                     detail_rows = [
                         {
                             "Observed At": e.observed_at,
