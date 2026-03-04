@@ -1395,7 +1395,7 @@ def main() -> None:
                             "Details": "Not in Top-10 for 3 consecutive runs",
                         }
                     )
-                if back_confirmed_at:
+                if back_confirmed_at and drop_confirmed_at:
                     events.append(
                         {
                             "Time": back_confirmed_at,
