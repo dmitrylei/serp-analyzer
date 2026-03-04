@@ -23,6 +23,7 @@ from serp_monitor.db.models import (
     KeywordSchedule,
     PageTag,
     Run,
+    RunStatus,
     SchedulerStatus,
     SerpResult,
     TrackedHit,
