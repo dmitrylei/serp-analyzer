@@ -800,11 +800,13 @@ def main() -> None:
                     .order_by(RedirectEvent.observed_at.desc())
                     .first()
                 )
-                if redirect_now:
+                if redirect_now and redirect_now.final_domain != site_domain:
                     st.warning(
                         f"Redirecting to {redirect_now.final_url} "
                         f"(last seen {redirect_now.observed_at})"
                     )
+                if redirect_now and redirect_now.final_domain == site_domain:
+                    st.info(f"Redirect stopped (last seen {redirect_now.observed_at})")
                 redirect_origin = (
                     session.query(RedirectEvent)
                     .filter(RedirectEvent.final_domain == site_domain)
@@ -816,6 +818,21 @@ def main() -> None:
                         f"Added via redirect from {redirect_origin.source_domain} "
                         f"(first seen {redirect_origin.observed_at})"
                     )
+
+                chain_events = (
+                    session.query(RedirectEvent)
+                    .filter(RedirectEvent.source_domain == site_domain)
+                    .order_by(RedirectEvent.observed_at.asc())
+                    .all()
+                )
+                if chain_events:
+                    chain = [site_domain]
+                    for ev in chain_events:
+                        if ev.final_domain and ev.final_domain != site_domain:
+                            if not chain or chain[-1] != ev.final_domain:
+                                chain.append(ev.final_domain)
+                    if len(chain) > 1:
+                        st.caption("Redirect chain: " + " → ".join(chain))
 
                 hits = list(
                     session.query(TrackedHit)

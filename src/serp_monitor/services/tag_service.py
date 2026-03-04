@@ -178,7 +178,33 @@ class TagService:
             return
         source_domain = extract_domain(source_url)
         final_domain = extract_domain(final_url)
-        if not source_domain or not final_domain or final_domain == source_domain:
+        if not source_domain or not final_domain:
+            return
+
+        last_event = (
+            session.query(RedirectEvent)
+            .filter(RedirectEvent.source_domain == source_domain)
+            .order_by(RedirectEvent.observed_at.desc())
+            .first()
+        )
+
+        # No redirect now
+        if final_domain == source_domain:
+            if last_event and last_event.final_domain != source_domain:
+                session.add(
+                    RedirectEvent(
+                        run_id=run_id,
+                        source_url=source_url,
+                        final_url=source_url,
+                        source_domain=source_domain,
+                        final_domain=source_domain,
+                        chain=chain,
+                    )
+                )
+            return
+
+        # Redirect unchanged -> skip
+        if last_event and last_event.final_domain == final_domain and last_event.final_url == final_url:
             return
 
         session.add(
