@@ -976,33 +976,35 @@ def main() -> None:
                         .distinct()
                         .all()
                     )
-                    hits = (
-                        session.query(TrackedHit)
-                        .filter(
-                            TrackedHit.tracked_site_id == site_id,
-                            TrackedHit.keyword_id == selected_kw_id,
-                        )
-                        .order_by(TrackedHit.detected_at.asc())
-                        .all()
-                    )
-
-                    if not runs or not hits:
+                    if not runs:
                         st.info("No runs yet for this keyword/site.")
                     else:
-                        first_hit = hits[0]
-                        # Only show runs after the first time the site was found
-                        runs = [r for r in runs if r.created_at >= first_hit.detected_at]
+                        serp_rows = (
+                            session.query(SerpResult)
+                            .filter(SerpResult.keyword_id == selected_kw_id)
+                            .all()
+                        )
 
                         best_pos_by_run: dict[int, dict[str, str | int]] = {}
-                        for hit in hits:
-                            if hit.position is None:
+                        for row in serp_rows:
+                            if extract_domain(row.link) != site_domain:
                                 continue
-                            prev = best_pos_by_run.get(hit.run_id)
-                            if prev is None or hit.position < int(prev["pos"]):
-                                best_pos_by_run[hit.run_id] = {
-                                    "pos": int(hit.position),
-                                    "url": hit.url or "—",
+                            pos = int(row.position)
+                            prev = best_pos_by_run.get(row.run_id)
+                            if prev is None or pos < int(prev["pos"]):
+                                best_pos_by_run[row.run_id] = {
+                                    "pos": pos,
+                                    "url": row.link,
                                 }
+
+                        if not best_pos_by_run:
+                            st.info("No runs yet for this keyword/site.")
+                            return
+
+                        first_seen_time = min(
+                            r.created_at for r in runs if r.id in best_pos_by_run
+                        )
+                        runs = [r for r in runs if r.created_at >= first_seen_time]
 
                         table = []
                         for r in runs:
