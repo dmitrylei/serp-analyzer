@@ -298,7 +298,7 @@ def main() -> None:
     if not os.getenv("DATABASE_URL"):
         st.warning("DATABASE_URL is not set. Add it to .env to enable history.")
 
-    tabs = st.tabs(["New Query", "History", "Keywords", "Sites", "Canonical", "Settings"])
+    tabs = st.tabs(["New Query", "History", "Keywords", "Sites", "Canonical", "Reports", "Settings"])
 
     with tabs[0]:
         with st.form("serp_form"):
@@ -1240,6 +1240,228 @@ def main() -> None:
                 st.dataframe(pd.DataFrame(detail_rows), width="stretch")
 
     with tabs[5]:
+        st.subheader("Report / Dossier")
+        try:
+            with get_session() as session:
+                sites = list(session.query(TrackedSite).order_by(TrackedSite.id.desc()).all())
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Failed to load tracked sites: {exc}")
+            return
+
+        if not sites:
+            st.info("No tracked sites yet.")
+        else:
+            site_options = {f"{s.id} • {s.domain}": s.id for s in sites}
+            selected_site = st.selectbox("Site", list(site_options.keys()), key="report_site")
+            site_id = site_options[selected_site]
+            site_domain = selected_site.split(" • ", 1)[1]
+
+            with get_session() as session:
+                keyword_ids = (
+                    session.query(TrackedHit.keyword_id)
+                    .filter(TrackedHit.tracked_site_id == site_id)
+                    .distinct()
+                    .all()
+                )
+                keyword_ids = [kid for (kid,) in keyword_ids]
+                keywords = (
+                    session.query(Keyword)
+                    .filter(Keyword.id.in_(keyword_ids))
+                    .order_by(Keyword.keyword)
+                    .all()
+                )
+
+            if not keywords:
+                st.info("No keywords tracked for this site yet.")
+            else:
+                keyword_options = {
+                    f"{k.keyword} • {k.region}/{k.language}": k.id for k in keywords
+                }
+                selected_kw = st.selectbox(
+                    "Keyword", list(keyword_options.keys()), key="report_keyword"
+                )
+                selected_kw_id = keyword_options[selected_kw]
+
+                with get_session() as session:
+                    runs = (
+                        session.query(Run)
+                        .join(SerpResult, SerpResult.run_id == Run.id)
+                        .filter(SerpResult.keyword_id == selected_kw_id)
+                        .order_by(Run.created_at.asc())
+                        .distinct()
+                        .all()
+                    )
+                    if not runs:
+                        st.info("No runs yet for this keyword.")
+                        return
+
+                    run_ids = [r.id for r in runs]
+                    serp_rows = (
+                        session.query(SerpResult)
+                        .filter(
+                            SerpResult.run_id.in_(run_ids),
+                            SerpResult.keyword_id == selected_kw_id,
+                        )
+                        .all()
+                    )
+
+                best_by_run: dict[int, dict[str, str | int]] = {}
+                for row in serp_rows:
+                    if extract_domain(row.link) != site_domain:
+                        continue
+                    pos = int(row.position)
+                    prev = best_by_run.get(row.run_id)
+                    if prev is None or pos < int(prev["pos"]):
+                        best_by_run[row.run_id] = {"pos": pos, "link": row.link}
+
+                table = []
+                for r in runs:
+                    best = best_by_run.get(r.id)
+                    table.append(
+                        {
+                            "Run ID": r.id,
+                            "Date": r.created_at,
+                            "Position": best["pos"] if best else "not in top 10",
+                            "URL": best["link"] if best else "—",
+                        }
+                    )
+                df_runs = pd.DataFrame(table)
+                st.subheader("Positions by Run")
+                st.dataframe(df_runs, width="stretch")
+
+                df_chart = df_runs.copy()
+                df_chart["Position Value"] = df_chart["Position"].apply(
+                    lambda v: 11 if v == "not in top 10" else int(v)
+                )
+                st.line_chart(df_chart.set_index("Date")["Position Value"])
+
+                # First drop
+                first_hit_time = None
+                drop_time = None
+                last_link_before = None
+                for r in runs:
+                    best = best_by_run.get(r.id)
+                    if best and first_hit_time is None:
+                        first_hit_time = r.created_at
+                    if best:
+                        last_link_before = best["link"]
+                    if first_hit_time and best is None:
+                        drop_time = r.created_at
+                        break
+
+                if drop_time:
+                    st.info(f"First drop out of Top-10: {drop_time}")
+                else:
+                    st.info("No drop out of Top-10 yet.")
+
+                if not drop_time:
+                    return
+
+                events: list[dict[str, str | datetime]] = []
+
+                with get_session() as session:
+                    redirect_events = (
+                        session.query(RedirectEvent)
+                        .filter(
+                            RedirectEvent.source_domain == site_domain,
+                            RedirectEvent.observed_at >= drop_time,
+                        )
+                        .order_by(RedirectEvent.observed_at.asc())
+                        .all()
+                    )
+                    for ev in redirect_events:
+                        events.append(
+                            {
+                                "Time": ev.observed_at,
+                                "Event": f"Redirected to {ev.final_url}",
+                                "Details": " → ".join(ev.chain or []),
+                            }
+                        )
+
+                    # Canonical / hreflang changes after drop
+                    hit_urls = (
+                        session.query(TrackedHit.url)
+                        .filter(
+                            TrackedHit.tracked_site_id == site_id,
+                            TrackedHit.keyword_id == selected_kw_id,
+                        )
+                        .distinct()
+                        .all()
+                    )
+                    hit_urls = [u for (u,) in hit_urls if u]
+                    if hit_urls:
+                        watch_ids = (
+                            session.query(WatchUrl.id)
+                            .filter(WatchUrl.url.in_(hit_urls))
+                            .all()
+                        )
+                        watch_ids = [wid for (wid,) in watch_ids]
+                        tags = (
+                            session.query(PageTag)
+                            .filter(
+                                PageTag.watch_url_id.in_(watch_ids),
+                                PageTag.created_at >= drop_time,
+                            )
+                            .order_by(PageTag.created_at.asc())
+                            .all()
+                        )
+                        last_can = None
+                        last_hre = None
+                        for tag in tags:
+                            raw = tag.raw or {}
+                            google = _extract_tag_block(raw, "googlebot") or {}
+                            bot = _extract_tag_block(raw, "bot") or {
+                                "canonical": tag.canonical,
+                                "hreflang": tag.hreflang,
+                            }
+                            canonical, hreflang = _pick_preferred_tags(google, bot)
+                            if last_can is not None and canonical != last_can:
+                                events.append(
+                                    {
+                                        "Time": tag.created_at,
+                                        "Event": "Canonical changed",
+                                        "Details": f"{last_can} → {canonical}",
+                                    }
+                                )
+                            if last_hre is not None and hreflang != last_hre:
+                                events.append(
+                                    {
+                                        "Time": tag.created_at,
+                                        "Event": "Hreflang changed",
+                                        "Details": "Changed",
+                                    }
+                                )
+                            last_can = canonical
+                            last_hre = hreflang
+
+                # New target page after drop
+                first_link_after = None
+                for r in runs:
+                    if r.created_at <= drop_time:
+                        continue
+                    best = best_by_run.get(r.id)
+                    if best:
+                        first_link_after = best["link"]
+                        break
+                if first_link_after and last_link_before and first_link_after != last_link_before:
+                    events.append(
+                        {
+                            "Time": drop_time,
+                            "Event": "New target page in SERP",
+                            "Details": f"{last_link_before} → {first_link_after}",
+                        }
+                    )
+
+                if not events:
+                    events.append(
+                        {"Time": drop_time, "Event": "No activity", "Details": "No changes detected"}
+                    )
+
+                events_df = pd.DataFrame(events).sort_values("Time")
+                st.subheader("Events after drop")
+                st.dataframe(events_df, width="stretch")
+
+    with tabs[6]:
         _scheduler_status_block()
 
 
