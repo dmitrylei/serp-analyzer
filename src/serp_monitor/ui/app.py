@@ -767,6 +767,26 @@ def main() -> None:
         if not sites:
             st.info("No tracked sites yet. Use ★ in History to add.")
         else:
+            st.write("Manual checks")
+            if st.button("Check redirects", key="check_redirects_btn"):
+                try:
+                    settings = get_settings()
+                    now = datetime.now(ZoneInfo(settings.scheduler_tz))
+                    with get_session() as session:
+                        run = Run(kind="redirects_manual", status=RunStatus.running, started_at=now)
+                        session.add(run)
+                        session.flush()
+                        tag_service = TagService(settings)
+                        for site in sites:
+                            url = f"https://{site.domain}"
+                            tag_service.check_url(session, run.id, url, region=None, language=None)
+                        run.status = RunStatus.success
+                        run.finished_at = datetime.now(ZoneInfo(settings.scheduler_tz))
+                        session.commit()
+                    st.success("Redirect check completed")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Redirect check failed: {exc}")
+
             site_options = {f"{s.id} • {s.domain}": s.id for s in sites}
             selected_site = st.selectbox("Select site", list(site_options.keys()))
             site_id = site_options[selected_site]
