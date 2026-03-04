@@ -953,6 +953,19 @@ def main() -> None:
                     if len(chain) > 1:
                         st.caption("Redirect chain: " + " → ".join(chain))
 
+                canonical_events = (
+                    session.query(CanonicalEdge)
+                    .filter(CanonicalEdge.source_url.contains(site_domain))
+                    .order_by(CanonicalEdge.observed_at.asc())
+                    .all()
+                )
+                canon_chain = [site_domain]
+                for ev in canonical_events:
+                    can_domain = extract_domain(ev.canonical_url or "")
+                    if can_domain and (not canon_chain or canon_chain[-1] != can_domain):
+                        canon_chain.append(can_domain)
+                st.caption("Canonical chain: " + " → ".join(canon_chain))
+
                 hits = list(
                     session.query(TrackedHit)
                     .filter(TrackedHit.tracked_site_id == site_id)
@@ -1222,56 +1235,82 @@ def main() -> None:
                     st.error(f"Failed to remove site: {exc}")
 
     with tabs[4]:
-        st.subheader("Canonical Chain")
+        st.subheader("Canonical Chain (changes over time)")
         try:
             with get_session() as session:
-                canonical_sites = (
-                    session.query(CanonicalSite).order_by(CanonicalSite.id.desc()).limit(200).all()
-                )
+                favorites = session.query(CanonicalFavorite).order_by(CanonicalFavorite.id.desc()).all()
         except Exception as exc:  # noqa: BLE001
-            st.error(f"Failed to load canonical sites: {exc}")
+            st.error(f"Failed to load canonical favorites: {exc}")
             return
 
-        if not canonical_sites:
-            st.info("No canonical sites tracked yet.")
+        fav_urls = [f.url for f in favorites]
+        if not fav_urls:
+            st.info("No canonical favorites yet.")
         else:
-            rows = []
+            selected_url = st.selectbox(
+                "Select canonical favorite", fav_urls, key="canonical_chain_select"
+            )
             with get_session() as session:
-                for site in canonical_sites:
-                    first_edge = (
-                        session.query(CanonicalEdge)
-                        .filter(CanonicalEdge.canonical_url == site.url)
-                        .order_by(CanonicalEdge.observed_at.asc())
+                # Find earliest appearance of this url in canonical edges
+                first_edge = (
+                    session.query(CanonicalEdge)
+                    .filter(CanonicalEdge.canonical_url == selected_url)
+                    .order_by(CanonicalEdge.observed_at.asc())
+                    .first()
+                )
+                first_seen = first_edge.observed_at if first_edge else None
+                first_source = first_edge.source_url if first_edge else None
+
+                keyword_geo = "—"
+                if first_edge:
+                    serp = (
+                        session.query(SerpResult)
+                        .filter(SerpResult.run_id == first_edge.run_id)
                         .first()
                     )
-                    if not first_edge:
-                        continue
-                    keyword = None
-                    geo = "—"
-                    try:
-                        serp = (
-                            session.query(SerpResult)
-                            .filter(SerpResult.run_id == first_edge.run_id)
-                            .first()
-                        )
-                        if serp:
-                            keyword = session.get(Keyword, serp.keyword_id)
-                            if keyword:
-                                geo = f"{keyword.region}/{keyword.language}"
-                    except Exception:
-                        keyword = None
-                    keyword_geo = "—"
-                    if keyword:
-                        keyword_geo = f"{keyword.keyword} / {geo}"
-                    rows.append(
-                        {
-                            "Canonical Site": site.url,
-                            "First Site": first_edge.source_url,
-                            "First Date Time": first_edge.observed_at,
-                            "Keywords / GEO": keyword_geo,
-                        }
+                    if serp:
+                        keyword = session.get(Keyword, serp.keyword_id)
+                        if keyword:
+                            keyword_geo = f"{keyword.keyword} / {keyword.region}/{keyword.language}"
+
+                if first_seen:
+                    st.caption(
+                        f"First seen: {first_seen} • From {first_source or '—'} • {keyword_geo}"
                     )
-            st.dataframe(pd.DataFrame(rows), width="stretch")
+                else:
+                    st.caption("First seen: —")
+
+                edges = (
+                    session.query(CanonicalEdge)
+                    .filter(CanonicalEdge.canonical_url == selected_url)
+                    .order_by(CanonicalEdge.observed_at.asc())
+                    .all()
+                )
+
+                if not edges:
+                    st.info("No canonical chain events for this site yet.")
+                else:
+                    chain_parts = []
+                    for ev in edges:
+                        src_domain = extract_domain(ev.source_url)
+                        can_domain = extract_domain(ev.canonical_url or "")
+                        if src_domain:
+                            chain_parts.append(src_domain)
+                        if can_domain and (not chain_parts or chain_parts[-1] != can_domain):
+                            chain_parts.append(can_domain)
+                    chain_text = " → ".join(chain_parts) if chain_parts else selected_url
+                    st.write(chain_text)
+
+                    detail_rows = [
+                        {
+                            "Observed At": e.observed_at,
+                            "Source URL": e.source_url,
+                            "Canonical URL": e.canonical_url or "—",
+                            "Run ID": e.run_id,
+                        }
+                        for e in edges
+                    ]
+                    st.dataframe(pd.DataFrame(detail_rows), width="stretch")
 
         st.divider()
         st.subheader("Canonical Favorites")
