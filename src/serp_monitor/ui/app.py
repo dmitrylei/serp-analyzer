@@ -788,7 +788,126 @@ def main() -> None:
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"Redirect check failed: {exc}")
 
-            site_options = {f"{s.id} • {s.domain}": s.id for s in sites}
+            st.subheader("Site Filters")
+            col_a, col_b, col_c, col_d = st.columns(4)
+            with col_a:
+                rank_filter = st.selectbox(
+                    "Top-10 now",
+                    ["Any", "Yes", "No"],
+                    key="site_filter_rank",
+                )
+            with col_b:
+                canonical_filter = st.selectbox(
+                    "Canonical changed",
+                    ["Any", "Yes", "No"],
+                    key="site_filter_canonical",
+                )
+            with col_c:
+                hreflang_filter = st.selectbox(
+                    "Hreflang changed",
+                    ["Any", "Yes", "No"],
+                    key="site_filter_hreflang",
+                )
+            with col_d:
+                redirect_filter = st.selectbox(
+                    "Redirects",
+                    ["Any", "Ever", "Now", "Never"],
+                    key="site_filter_redirect",
+                )
+
+            def _flag_changed_for_domain(session, domain: str) -> tuple[bool, bool]:
+                watch_ids = [
+                    w.id for w in session.query(WatchUrl).all() if extract_domain(w.url) == domain
+                ]
+                if not watch_ids:
+                    return False, False
+                tags = (
+                    session.query(PageTag)
+                    .filter(PageTag.watch_url_id.in_(watch_ids))
+                    .order_by(PageTag.created_at.asc())
+                    .all()
+                )
+                last_can = None
+                last_hre = None
+                can_changed = False
+                hre_changed = False
+                for tag in tags:
+                    raw = tag.raw or {}
+                    google = _extract_tag_block(raw, "googlebot") or {}
+                    bot = _extract_tag_block(raw, "bot") or {
+                        "canonical": tag.canonical,
+                        "hreflang": tag.hreflang,
+                    }
+                    canonical, hreflang = _pick_preferred_tags(google, bot)
+                    if last_can is not None and canonical != last_can:
+                        can_changed = True
+                    if last_hre is not None and hreflang != last_hre:
+                        hre_changed = True
+                    last_can = canonical
+                    last_hre = hreflang
+                return can_changed, hre_changed
+
+            def _redirect_flags(session, domain: str) -> tuple[bool, bool]:
+                events = (
+                    session.query(RedirectEvent)
+                    .filter(RedirectEvent.source_domain == domain)
+                    .order_by(RedirectEvent.observed_at.desc())
+                    .all()
+                )
+                if not events:
+                    return False, False
+                ever = any(ev.final_domain != domain for ev in events)
+                now = events[0].final_domain != domain
+                return ever, now
+
+            def _ranks_top10_now(session, domain: str) -> bool:
+                latest_run = session.query(Run).order_by(Run.created_at.desc()).first()
+                if not latest_run:
+                    return False
+                rows = (
+                    session.query(SerpResult)
+                    .filter(SerpResult.run_id == latest_run.id)
+                    .all()
+                )
+                for r in rows:
+                    if extract_domain(r.link) == domain and int(r.position) <= 10:
+                        return True
+                return False
+
+            filtered_sites = []
+            with get_session() as session:
+                for s in sites:
+                    domain = s.domain
+                    top_now = _ranks_top10_now(session, domain)
+                    can_changed, hre_changed = _flag_changed_for_domain(session, domain)
+                    red_ever, red_now = _redirect_flags(session, domain)
+
+                    if rank_filter == "Yes" and not top_now:
+                        continue
+                    if rank_filter == "No" and top_now:
+                        continue
+                    if canonical_filter == "Yes" and not can_changed:
+                        continue
+                    if canonical_filter == "No" and can_changed:
+                        continue
+                    if hreflang_filter == "Yes" and not hre_changed:
+                        continue
+                    if hreflang_filter == "No" and hre_changed:
+                        continue
+                    if redirect_filter == "Ever" and not red_ever:
+                        continue
+                    if redirect_filter == "Now" and not red_now:
+                        continue
+                    if redirect_filter == "Never" and red_ever:
+                        continue
+
+                    filtered_sites.append(s)
+
+            if not filtered_sites:
+                st.info("No sites match current filters.")
+                return
+
+            site_options = {f"{s.id} • {s.domain}": s.id for s in filtered_sites}
             selected_site = st.selectbox("Select site", list(site_options.keys()))
             site_id = site_options[selected_site]
             site_domain = selected_site.split(" • ", 1)[1]
