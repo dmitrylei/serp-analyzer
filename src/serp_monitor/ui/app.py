@@ -31,6 +31,7 @@ from serp_monitor.db.models import (
     CanonicalSite,
     CanonicalEdge,
     CanonicalFavorite,
+    RedirectEvent,
 )
 from serp_monitor.db.session import get_session
 from serp_monitor.providers.serper import SerperClient
@@ -772,6 +773,29 @@ def main() -> None:
             site_domain = selected_site.split(" • ", 1)[1]
 
             with get_session() as session:
+                redirect_now = (
+                    session.query(RedirectEvent)
+                    .filter(RedirectEvent.source_domain == site_domain)
+                    .order_by(RedirectEvent.observed_at.desc())
+                    .first()
+                )
+                if redirect_now:
+                    st.warning(
+                        f"Redirecting to {redirect_now.final_url} "
+                        f"(last seen {redirect_now.observed_at})"
+                    )
+                redirect_origin = (
+                    session.query(RedirectEvent)
+                    .filter(RedirectEvent.final_domain == site_domain)
+                    .order_by(RedirectEvent.observed_at.asc())
+                    .first()
+                )
+                if redirect_origin:
+                    st.info(
+                        f"Added via redirect from {redirect_origin.source_domain} "
+                        f"(first seen {redirect_origin.observed_at})"
+                    )
+
                 hits = list(
                     session.query(TrackedHit)
                     .filter(TrackedHit.tracked_site_id == site_id)

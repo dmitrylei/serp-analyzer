@@ -7,8 +7,17 @@ from sqlalchemy.orm import Session
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from serp_monitor.config.settings import Settings
-from serp_monitor.db.models import PageTag, WatchUrl, CanonicalSite, CanonicalEdge, CanonicalFavorite
+from serp_monitor.db.models import (
+    PageTag,
+    WatchUrl,
+    CanonicalSite,
+    CanonicalEdge,
+    CanonicalFavorite,
+    RedirectEvent,
+    TrackedSite,
+)
 from serp_monitor.parsers.page_tags import parse_page_tags
+from serp_monitor.utils.urls import extract_domain
 
 
 class RetriableStatus(Exception):
@@ -47,23 +56,51 @@ class TagService:
         wait=wait_exponential(multiplier=1, min=1, max=8),
         retry=retry_if_exception_type(RetriableStatus),
     )
-    def _fetch_html(self, url: str, headers: dict[str, str]) -> tuple[str, str | None]:
+    def _fetch_html(self, url: str, headers: dict[str, str]) -> dict[str, Any]:
         timeout = httpx.Timeout(self._settings.http_timeout)
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             response = client.get(url, headers=headers)
             if response.status_code in {403, 429}:
                 raise RetriableStatus(response.status_code)
             response.raise_for_status()
-            return response.text, response.headers.get("Link")
+            chain = [str(r.url) for r in response.history] + [str(response.url)]
+            return {
+                "html": response.text,
+                "link": response.headers.get("Link"),
+                "status": response.status_code,
+                "final_url": str(response.url),
+                "chain": chain,
+            }
 
     def _safe_fetch(self, url: str, headers: dict[str, str]) -> dict[str, Any]:
         try:
-            html, link_header = self._fetch_html(url, headers)
-            return {"html": html, "link": link_header, "status": 200, "error": None}
+            data = self._fetch_html(url, headers)
+            return {
+                "html": data.get("html"),
+                "link": data.get("link"),
+                "status": data.get("status"),
+                "final_url": data.get("final_url"),
+                "chain": data.get("chain"),
+                "error": None,
+            }
         except RetriableStatus as exc:
-            return {"html": None, "link": None, "status": exc.status_code, "error": str(exc)}
+            return {
+                "html": None,
+                "link": None,
+                "status": exc.status_code,
+                "final_url": None,
+                "chain": None,
+                "error": str(exc),
+            }
         except Exception as exc:  # noqa: BLE001
-            return {"html": None, "link": None, "status": None, "error": str(exc)}
+            return {
+                "html": None,
+                "link": None,
+                "status": None,
+                "final_url": None,
+                "chain": None,
+                "error": str(exc),
+            }
 
     def _get_or_create_watch_url(
         self, session: Session, url: str, region: str | None
@@ -99,6 +136,12 @@ class TagService:
 
         bot_parsed = parse_page_tags(bot_fetch["html"] or "", bot_fetch.get("link"))
         google_parsed = parse_page_tags(google_fetch["html"] or "", google_fetch.get("link"))
+        if bot_fetch.get("final_url"):
+            bot_parsed["final_url"] = bot_fetch.get("final_url")
+            bot_parsed["redirect_chain"] = bot_fetch.get("chain")
+        if google_fetch.get("final_url"):
+            google_parsed["final_url"] = google_fetch.get("final_url")
+            google_parsed["redirect_chain"] = google_fetch.get("chain")
         bot_parsed.update({"status": bot_fetch["status"], "error": bot_fetch["error"]})
         google_parsed.update(
             {"status": google_fetch["status"], "error": google_fetch["error"]}
@@ -118,12 +161,41 @@ class TagService:
             },
         )
         session.add(row)
+        self._record_redirect_event(session, run_id, url, bot_fetch)
         self._record_canonical_chain(session, run_id, url, google_parsed, bot_parsed)
         session.commit()
         return {
             "bot": bot_parsed,
             "googlebot": google_parsed,
         }
+
+    def _record_redirect_event(
+        self, session: Session, run_id: int, source_url: str, fetch: dict[str, Any]
+    ) -> None:
+        final_url = fetch.get("final_url")
+        chain = fetch.get("chain") or []
+        if not final_url:
+            return
+        source_domain = extract_domain(source_url)
+        final_domain = extract_domain(final_url)
+        if not source_domain or not final_domain or final_domain == source_domain:
+            return
+
+        session.add(
+            RedirectEvent(
+                run_id=run_id,
+                source_url=source_url,
+                final_url=final_url,
+                source_domain=source_domain,
+                final_domain=final_domain,
+                chain=chain,
+            )
+        )
+        existing = (
+            session.query(TrackedSite).filter(TrackedSite.domain == final_domain).one_or_none()
+        )
+        if not existing:
+            session.add(TrackedSite(domain=final_domain))
 
     def _record_canonical_chain(
         self,

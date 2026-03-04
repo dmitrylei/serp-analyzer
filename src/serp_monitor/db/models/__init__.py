@@ -7,6 +7,7 @@ from serp_monitor.db.models.tracked_hit import TrackedHit
 from serp_monitor.db.models.canonical_site import CanonicalSite
 from serp_monitor.db.models.canonical_edge import CanonicalEdge
 from serp_monitor.db.models.canonical_favorite import CanonicalFavorite
+from serp_monitor.db.models.redirect_event import RedirectEvent
 from serp_monitor.db.models.run import Run, RunStatus
 from serp_monitor.db.models.serp_result import SerpResult
 from serp_monitor.db.models.watch_url import WatchUrl
@@ -21,6 +22,7 @@ __all__ = [
     "CanonicalSite",
     "CanonicalEdge",
     "CanonicalFavorite",
+    "RedirectEvent",
     "Run",
     "RunStatus",
     "SerpResult",
