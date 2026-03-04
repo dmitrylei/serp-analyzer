@@ -945,6 +945,8 @@ def main() -> None:
 
                         best_pos_by_run: dict[int, dict[str, str | int]] = {}
                         for hit in hits:
+                            if hit.position is None:
+                                continue
                             prev = best_pos_by_run.get(hit.run_id)
                             if prev is None or hit.position < int(prev["pos"]):
                                 best_pos_by_run[hit.run_id] = {
@@ -1301,6 +1303,8 @@ def main() -> None:
 
                 best_by_run: dict[int, dict[str, str | int]] = {}
                 for hit in hits:
+                    if hit.position is None:
+                        continue
                     prev = best_by_run.get(hit.run_id)
                     if prev is None or hit.position < int(prev["pos"]):
                         best_by_run[hit.run_id] = {"pos": int(hit.position), "link": hit.url or "—"}
