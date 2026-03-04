@@ -937,6 +937,19 @@ def main() -> None:
                         f"Added via redirect from {redirect_origin.source_domain} "
                         f"(first seen {redirect_origin.observed_at})"
                     )
+                    origin_events = (
+                        session.query(RedirectEvent)
+                        .filter(RedirectEvent.final_domain == site_domain)
+                        .order_by(RedirectEvent.observed_at.asc())
+                        .all()
+                    )
+                    if origin_events:
+                        origin_chain = [origin_events[0].source_domain]
+                        for ev in origin_events:
+                            if ev.final_domain and (not origin_chain or origin_chain[-1] != ev.final_domain):
+                                origin_chain.append(ev.final_domain)
+                        if len(origin_chain) > 1:
+                            st.caption("Redirect chain: " + " → ".join(origin_chain))
 
                 chain_events = (
                     session.query(RedirectEvent)
