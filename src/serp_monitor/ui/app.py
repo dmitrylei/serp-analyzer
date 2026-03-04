@@ -1166,10 +1166,19 @@ def main() -> None:
             st.divider()
             st.subheader("Tags History")
             with get_session() as session:
-                watch_urls = session.query(WatchUrl).all()
-                watch_ids = [
-                    w.id for w in watch_urls if extract_domain(w.url) == site_domain
-                ]
+                hit_urls = (
+                    session.query(TrackedHit.url)
+                    .filter(TrackedHit.tracked_site_id == site_id)
+                    .distinct()
+                    .all()
+                )
+                hit_urls = [u for (u,) in hit_urls if u]
+                watch_ids = (
+                    session.query(WatchUrl.id)
+                    .filter(WatchUrl.url.in_(hit_urls))
+                    .all()
+                )
+                watch_ids = [wid for (wid,) in watch_ids]
                 if not watch_ids:
                     st.info("No tag checks yet.")
                 else:
