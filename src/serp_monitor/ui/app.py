@@ -1248,7 +1248,7 @@ def main() -> None:
             st.info("No canonical favorites yet.")
         else:
             selected_url = st.selectbox(
-                "Select canonical favorite", fav_urls, key="canonical_chain_select"
+                "Select canonical favorite", fav_urls, key="canonical_chain_select_top"
             )
             with get_session() as session:
                 # Find earliest appearance of this url in canonical edges
