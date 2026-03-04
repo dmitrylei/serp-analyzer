@@ -926,49 +926,40 @@ def main() -> None:
                         .distinct()
                         .all()
                     )
-                    first_hit = (
+                    hits = (
                         session.query(TrackedHit)
                         .filter(
                             TrackedHit.tracked_site_id == site_id,
                             TrackedHit.keyword_id == selected_kw_id,
                         )
                         .order_by(TrackedHit.detected_at.asc())
-                        .first()
+                        .all()
                     )
 
-                    if not runs or not first_hit:
+                    if not runs or not hits:
                         st.info("No runs yet for this keyword/site.")
                     else:
+                        first_hit = hits[0]
                         # Only show runs after the first time the site was found
                         runs = [r for r in runs if r.created_at >= first_hit.detected_at]
-                        run_ids = [r.id for r in runs]
 
-                        serp_rows = (
-                            session.query(SerpResult)
-                            .filter(
-                                SerpResult.run_id.in_(run_ids),
-                                SerpResult.keyword_id == selected_kw_id,
-                            )
-                            .all()
-                        )
-
-                        best_pos_by_run = {}
-                        for row in serp_rows:
-                            if extract_domain(row.link) != site_domain:
-                                continue
-                            pos = int(row.position)
-                            prev = best_pos_by_run.get(row.run_id)
-                            if prev is None or pos < prev:
-                                best_pos_by_run[row.run_id] = pos
+                        best_pos_by_run: dict[int, dict[str, str | int]] = {}
+                        for hit in hits:
+                            prev = best_pos_by_run.get(hit.run_id)
+                            if prev is None or hit.position < int(prev["pos"]):
+                                best_pos_by_run[hit.run_id] = {
+                                    "pos": int(hit.position),
+                                    "url": hit.url or "—",
+                                }
 
                         table = []
                         for r in runs:
-                            pos = best_pos_by_run.get(r.id)
+                            best = best_pos_by_run.get(r.id)
                             table.append(
                                 {
                                     "Run ID": r.id,
                                     "Date": r.created_at,
-                                    "Position": pos if pos is not None else "not in top 10",
+                                    "Position": best["pos"] if best else "not in top 10",
                                 }
                             )
                         st.dataframe(pd.DataFrame(table), width="stretch")
@@ -1295,24 +1286,24 @@ def main() -> None:
                         st.info("No runs yet for this keyword.")
                         return
 
-                    run_ids = [r.id for r in runs]
-                    serp_rows = (
-                        session.query(SerpResult)
+                    hits = (
+                        session.query(TrackedHit)
                         .filter(
-                            SerpResult.run_id.in_(run_ids),
-                            SerpResult.keyword_id == selected_kw_id,
+                            TrackedHit.tracked_site_id == site_id,
+                            TrackedHit.keyword_id == selected_kw_id,
                         )
+                        .order_by(TrackedHit.detected_at.asc())
                         .all()
                     )
+                    if not hits:
+                        st.info("No runs yet for this keyword/site.")
+                        return
 
                 best_by_run: dict[int, dict[str, str | int]] = {}
-                for row in serp_rows:
-                    if extract_domain(row.link) != site_domain:
-                        continue
-                    pos = int(row.position)
-                    prev = best_by_run.get(row.run_id)
-                    if prev is None or pos < int(prev["pos"]):
-                        best_by_run[row.run_id] = {"pos": pos, "link": row.link}
+                for hit in hits:
+                    prev = best_by_run.get(hit.run_id)
+                    if prev is None or hit.position < int(prev["pos"]):
+                        best_by_run[hit.run_id] = {"pos": int(hit.position), "link": hit.url or "—"}
 
                 table = []
                 for r in runs:
